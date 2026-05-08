@@ -93,3 +93,44 @@ The test suite will connect to this port and verify:
 - **J4**: Expiry handling — confirm SDK rejects expired JWTs
 - **J5**: Bundle consistency — verify JWT validation uses current bundle
 
+## GitHub Action
+
+This repository ships a composite GitHub Action that installs the suite and runs it against your SDK harness.
+
+```yaml
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build your SDK harness here, e.g.:
+      # - run: go build -o ./bin/harness ./cmd/harness
+
+      - uses: arndt-s/spiffe-conformance-test-suite@v1
+        with:
+          cmd: ./bin/harness
+          args: --foo,--bar
+          output: json
+          results-file: conformance.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-results
+          path: conformance.json
+```
+
+### Inputs
+
+| Input           | Required | Default  | Description                                                  |
+| --------------- | -------- | -------- | ------------------------------------------------------------ |
+| `cmd`           | yes      | —        | Path to the SDK harness binary to test.                      |
+| `args`          | no       | `''`     | Comma-separated arguments to pass to the harness.            |
+| `run`           | no       | `''`     | Run only the named test case (e.g. `X1`).                    |
+| `output`        | no       | `text`   | Output format: `text` or `json`.                             |
+| `results-file`  | no       | `''`     | Also write suite output to this path.                        |
+| `verbose`       | no       | `false`  | Enable verbose logging.                                      |
+| `suite-version` | no       | `latest` | Suite version to install (git tag, branch, or `latest`).     |
+| `go-version`    | no       | `stable` | Go toolchain version used to install the suite.              |
+
