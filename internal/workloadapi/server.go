@@ -1,0 +1,257 @@
+package workloadapi
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"sync"
+
+	workloadv1 "github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+)
+
+// Server is a controllable mock SPIFFE Workload API gRPC server.
+type Server struct {
+	workloadv1.UnimplementedSpiffeWorkloadAPIServer
+	grpcServer *grpc.Server
+	socketPath string
+
+	mu   sync.RWMutex
+	x509 *X509State
+	jwt  *JWTState
+	// notify is closed and replaced whenever state is updated.
+	// Streaming RPCs select on this to detect state changes.
+	notify chan struct{}
+}
+
+// NewServer creates a Server that will listen on the given UDS path.
+func NewServer(socketPath string) *Server {
+	s := &Server{
+		socketPath: socketPath,
+		notify:     make(chan struct{}),
+	}
+	s.grpcServer = grpc.NewServer()
+	workloadv1.RegisterSpiffeWorkloadAPIServer(s.grpcServer, s)
+	return s
+}
+
+// Start begins accepting connections. It returns once the listener is ready.
+func (s *Server) Start() error {
+	ln, err := net.Listen("unix", s.socketPath)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", s.socketPath, err)
+	}
+	go func() { _ = s.grpcServer.Serve(ln) }()
+	return nil
+}
+
+// Stop gracefully stops the server.
+func (s *Server) Stop() {
+	s.grpcServer.GracefulStop()
+}
+
+// SetX509State atomically replaces the X.509 state and notifies active streams.
+func (s *Server) SetX509State(state *X509State) {
+	s.mu.Lock()
+	s.x509 = state
+	old := s.notify
+	s.notify = make(chan struct{})
+	s.mu.Unlock()
+	close(old) // wake streaming goroutines
+}
+
+// SetJWTState atomically replaces the JWT state.
+func (s *Server) SetJWTState(state *JWTState) {
+	s.mu.Lock()
+	s.jwt = state
+	s.mu.Unlock()
+}
+
+// SocketPath returns the UDS path.
+func (s *Server) SocketPath() string { return s.socketPath }
+
+// --- gRPC handler implementations ---
+
+func checkWorkloadHeader(ctx context.Context) error {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.InvalidArgument, "missing metadata")
+	}
+	vals := md.Get("workload.spiffe.io")
+	if len(vals) == 0 || vals[0] != "true" {
+		return status.Error(codes.InvalidArgument, "missing workload.spiffe.io:true header")
+	}
+	return nil
+}
+
+func (s *Server) FetchX509SVID(
+	_ *workloadv1.X509SVIDRequest,
+	stream workloadv1.SpiffeWorkloadAPI_FetchX509SVIDServer,
+) error {
+	if err := checkWorkloadHeader(stream.Context()); err != nil {
+		return err
+	}
+
+	for {
+		s.mu.RLock()
+		state := s.x509
+		notifyCh := s.notify
+		s.mu.RUnlock()
+
+		if state != nil {
+			resp, err := x509StateToProto(state)
+			if err != nil {
+				return status.Errorf(codes.Internal, "build response: %v", err)
+			}
+			if err := stream.Send(resp); err != nil {
+				return err
+			}
+		}
+
+		select {
+		case <-stream.Context().Done():
+			return nil
+		case <-notifyCh:
+			// state updated — loop and resend
+		}
+	}
+}
+
+func (s *Server) FetchX509Bundles(
+	_ *workloadv1.X509BundlesRequest,
+	stream workloadv1.SpiffeWorkloadAPI_FetchX509BundlesServer,
+) error {
+	if err := checkWorkloadHeader(stream.Context()); err != nil {
+		return err
+	}
+
+	for {
+		s.mu.RLock()
+		state := s.x509
+		notifyCh := s.notify
+		s.mu.RUnlock()
+
+		if state != nil {
+			bundles := map[string][]byte{}
+			for _, m := range state.Materials {
+				bundles[m.CACert.URIs[0].Host] = m.CACertDER
+			}
+			if err := stream.Send(&workloadv1.X509BundlesResponse{Bundles: bundles}); err != nil {
+				return err
+			}
+		}
+
+		select {
+		case <-stream.Context().Done():
+			return nil
+		case <-notifyCh:
+		}
+	}
+}
+
+func (s *Server) FetchJWTSVID(
+	ctx context.Context,
+	req *workloadv1.JWTSVIDRequest,
+) (*workloadv1.JWTSVIDResponse, error) {
+	if err := checkWorkloadHeader(ctx); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	state := s.jwt
+	s.mu.RUnlock()
+
+	if state == nil {
+		return nil, status.Error(codes.NotFound, "no JWT state configured")
+	}
+
+	var svids []*workloadv1.JWTSVID
+	for _, m := range state.Materials {
+		svids = append(svids, &workloadv1.JWTSVID{
+			SpiffeId: m.SPIFFEID,
+			Svid:     m.Token,
+		})
+	}
+	return &workloadv1.JWTSVIDResponse{Svids: svids}, nil
+}
+
+func (s *Server) FetchJWTBundles(
+	_ *workloadv1.JWTBundlesRequest,
+	stream workloadv1.SpiffeWorkloadAPI_FetchJWTBundlesServer,
+) error {
+	if err := checkWorkloadHeader(stream.Context()); err != nil {
+		return err
+	}
+
+	s.mu.RLock()
+	state := s.jwt
+	s.mu.RUnlock()
+
+	bundles := map[string][]byte{}
+	if state != nil {
+		for td, jwks := range state.JWKSBundle {
+			bundles[td] = jwks
+		}
+	}
+	if err := stream.Send(&workloadv1.JWTBundlesResponse{Bundles: bundles}); err != nil {
+		return err
+	}
+	<-stream.Context().Done()
+	return nil
+}
+
+// ValidateJWTSVID validates a JWT SVID against the current trust bundle.
+func (s *Server) ValidateJWTSVID(
+	ctx context.Context,
+	req *workloadv1.ValidateJWTSVIDRequest,
+) (*workloadv1.ValidateJWTSVIDResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "ValidateJWTSVID not implemented")
+}
+
+// x509StateToProto converts X509State to the wire proto.
+func x509StateToProto(state *X509State) (*workloadv1.X509SVIDResponse, error) {
+	var svids []*workloadv1.X509SVID
+	for _, m := range state.Materials {
+		der, err := encodePrivateKey(m)
+		if err != nil {
+			return nil, err
+		}
+		bundle := m.CACertDER
+		if len(state.TrustBundle) > 0 {
+			// flatten custom trust bundle
+			var flat []byte
+			for _, b := range state.TrustBundle {
+				flat = append(flat, b...)
+			}
+			bundle = flat
+		}
+		// Determine trust domain from CA cert URIs if present, else from SVID.
+		trustDomain := ""
+		if len(m.CACert.URIs) > 0 {
+			trustDomain = m.CACert.URIs[0].Host
+		}
+		svids = append(svids, &workloadv1.X509SVID{
+			SpiffeId:    m.SPIFFEID,
+			X509Svid:    flattenDER(m.CertChainDER()),
+			X509SvidKey: der,
+			Bundle:      bundle,
+			Hint:        trustDomain,
+		})
+	}
+	return &workloadv1.X509SVIDResponse{Svids: svids}, nil
+}
+
+func flattenDER(chain [][]byte) []byte {
+	var out []byte
+	for _, d := range chain {
+		out = append(out, d...)
+	}
+	return out
+}
+
+func encodePrivateKey(m interface{ KeyDER() ([]byte, error) }) ([]byte, error) {
+	return m.KeyDER()
+}
