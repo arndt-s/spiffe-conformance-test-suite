@@ -12,10 +12,18 @@ inputs:
     description: Comma-separated arguments to pass to the harness.
     required: false
     default: ''
-  run:
-    description: Run only the named test case (e.g. X1). Runs all tests if empty.
+  tests:
+    description: Comma-separated list of test cases to run (e.g. X1,J3). Empty runs all.
     required: false
     default: ''
+  allow-failure:
+    description: Comma-separated list of test cases whose failures should be tolerated. Tolerated failures are reported as SKIP and do not cause strict mode to fail.
+    required: false
+    default: ''
+  strict:
+    description: If true, the action fails when any non-tolerated test fails or errors.
+    required: false
+    default: 'false'
   output:
     description: 'Output format: text or json.'
     required: false
@@ -62,7 +70,9 @@ runs:
       env:
         INPUT_CMD: ${{ inputs.cmd }}
         INPUT_ARGS: ${{ inputs.args }}
-        INPUT_RUN: ${{ inputs.run }}
+        INPUT_TESTS: ${{ inputs.tests }}
+        INPUT_ALLOW_FAILURE: ${{ inputs.allow-failure }}
+        INPUT_STRICT: ${{ inputs.strict }}
         INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_RESULTS_FILE: ${{ inputs.results-file }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
@@ -72,8 +82,14 @@ runs:
         if [ -n "$INPUT_ARGS" ]; then
           flags+=( --args "$INPUT_ARGS" )
         fi
-        if [ -n "$INPUT_RUN" ]; then
-          flags+=( --run "$INPUT_RUN" )
+        if [ -n "$INPUT_TESTS" ]; then
+          flags+=( --tests "$INPUT_TESTS" )
+        fi
+        if [ -n "$INPUT_ALLOW_FAILURE" ]; then
+          flags+=( --allow-failure "$INPUT_ALLOW_FAILURE" )
+        fi
+        if [ "$INPUT_STRICT" = "true" ]; then
+          flags+=( --strict )
         fi
         if [ "$INPUT_VERBOSE" = "true" ]; then
           flags+=( --verbose )

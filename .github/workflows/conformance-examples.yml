@@ -26,6 +26,8 @@ jobs:
           cmd: ./sdks/go-spiffe/go-spiffe
           output: json
           results-file: go-spiffe-results.json
+          strict: 'true'
+          allow-failure: X3,X4,X5,X10,X11,X12,X13
           suite-version: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/upload-artifact@v4
@@ -57,6 +59,8 @@ jobs:
           args: sdks/defakto-spiffe-ts/dist/index.js
           output: json
           results-file: defakto-spiffe-ts-results.json
+          strict: 'true'
+          allow-failure: X3,X4,X5,X6,X7,X8,X9,X10,X11,X12,X13
           suite-version: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/upload-artifact@v4
