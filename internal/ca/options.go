@@ -15,8 +15,10 @@ type x509SVIDConfig struct {
 	notBefore   time.Time
 	isCA        bool
 	keyUsage    *x509.KeyUsage
+	extKeyUsage *[]x509.ExtKeyUsage
 	extraURIs   []*url.URL
 	uriOverride []*url.URL
+	omitURIs    bool
 }
 
 func defaultX509Config() x509SVIDConfig {
@@ -48,8 +50,25 @@ func WithX509IsCA() X509SVIDOption {
 }
 
 // WithX509KeyUsage overrides the default key usage flags on the leaf cert.
+// Pass 0 to omit the Key Usage extension entirely.
 func WithX509KeyUsage(ku x509.KeyUsage) X509SVIDOption {
 	return func(c *x509SVIDConfig) { c.keyUsage = &ku }
+}
+
+// WithX509ExtKeyUsage overrides the Extended Key Usage flags on the leaf
+// cert. Pass no arguments to emit an empty (but present) EKU extension.
+func WithX509ExtKeyUsage(eku ...x509.ExtKeyUsage) X509SVIDOption {
+	return func(c *x509SVIDConfig) {
+		copied := append([]x509.ExtKeyUsage(nil), eku...)
+		c.extKeyUsage = &copied
+	}
+}
+
+// WithX509OmitURIs issues a leaf with no URI SANs at all. The cert is
+// otherwise unchanged; the resulting cert violates the SVID requirement
+// of containing exactly one SPIFFE URI SAN.
+func WithX509OmitURIs() X509SVIDOption {
+	return func(c *x509SVIDConfig) { c.omitURIs = true }
 }
 
 // WithX509ExtraURIs appends additional URI SANs alongside the SPIFFE ID.
@@ -66,11 +85,12 @@ func WithX509URIOverride(uris ...*url.URL) X509SVIDOption {
 type JWTSVIDOption func(*jwtSVIDConfig)
 
 type jwtSVIDConfig struct {
-	ttl          time.Duration
-	audience     []string
-	extra        map[string]interface{}
-	deleteClaims []string
-	extraHeaders map[string]interface{}
+	ttl           time.Duration
+	audience      []string
+	extra         map[string]interface{}
+	deleteClaims  []string
+	extraHeaders  map[string]interface{}
+	deleteHeaders []string
 }
 
 func defaultJWTConfig() jwtSVIDConfig {
@@ -115,4 +135,10 @@ func WithJWTHeader(key string, value interface{}) JWTSVIDOption {
 		}
 		c.extraHeaders[key] = value
 	}
+}
+
+// WithJWTDeleteHeader removes a header field after the default ones have
+// been set. Useful for testing optional fields like "typ".
+func WithJWTDeleteHeader(key string) JWTSVIDOption {
+	return func(c *jwtSVIDConfig) { c.deleteHeaders = append(c.deleteHeaders, key) }
 }

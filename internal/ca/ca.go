@@ -156,15 +156,23 @@ func (c *CA) IssueX509SVID(spiffeID string, opts ...X509SVIDOption) (*X509SVIDMa
 	}
 
 	uris := []*url.URL{spiffeURI}
-	if cfg.uriOverride != nil {
+	switch {
+	case cfg.omitURIs:
+		uris = nil
+	case cfg.uriOverride != nil:
 		uris = cfg.uriOverride
-	} else {
+	default:
 		uris = append(uris, cfg.extraURIs...)
 	}
 
 	keyUsage := x509.KeyUsageDigitalSignature | x509.KeyUsageKeyAgreement
 	if cfg.keyUsage != nil {
 		keyUsage = *cfg.keyUsage
+	}
+
+	extKeyUsage := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
+	if cfg.extKeyUsage != nil {
+		extKeyUsage = *cfg.extKeyUsage
 	}
 
 	tmpl := &x509.Certificate{
@@ -175,7 +183,7 @@ func (c *CA) IssueX509SVID(spiffeID string, opts ...X509SVIDOption) (*X509SVIDMa
 		NotBefore:             cfg.notBefore,
 		NotAfter:              cfg.notBefore.Add(cfg.ttl),
 		KeyUsage:              keyUsage,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage:           extKeyUsage,
 		IsCA:                  cfg.isCA,
 		BasicConstraintsValid: cfg.isCA,
 	}
@@ -226,6 +234,9 @@ func (c *CA) IssueJWT(spiffeID string, opts ...JWTSVIDOption) (*JWTSVIDMaterial,
 	token.Header["kid"] = c.jwtKeyID
 	for k, v := range cfg.extraHeaders {
 		token.Header[k] = v
+	}
+	for _, k := range cfg.deleteHeaders {
+		delete(token.Header, k)
 	}
 
 	signed, err := token.SignedString(c.jwtKey)
