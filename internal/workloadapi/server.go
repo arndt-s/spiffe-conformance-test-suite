@@ -315,7 +315,7 @@ func (s *Server) ValidateJWTSVID(
 // x509StateToProto converts X509State to the wire proto.
 func x509StateToProto(state *X509State) (*workloadv1.X509SVIDResponse, error) {
 	var svids []*workloadv1.X509SVID
-	for _, m := range state.Materials {
+	for i, m := range state.Materials {
 		der, err := encodePrivateKey(m)
 		if err != nil {
 			return nil, err
@@ -334,12 +334,20 @@ func x509StateToProto(state *X509State) (*workloadv1.X509SVIDResponse, error) {
 		if len(m.CACert.URIs) > 0 {
 			trustDomain = m.CACert.URIs[0].Host
 		}
+		hint := trustDomain
+		if i < len(state.HintOverrides) && state.HintOverrides[i] != "" {
+			hint = state.HintOverrides[i]
+		}
+		svidBytes := flattenDER(m.CertChainDER())
+		if state.EmptyX509SVIDBytes {
+			svidBytes = nil
+		}
 		svids = append(svids, &workloadv1.X509SVID{
 			SpiffeId:    m.SPIFFEID,
-			X509Svid:    flattenDER(m.CertChainDER()),
+			X509Svid:    svidBytes,
 			X509SvidKey: der,
 			Bundle:      bundle,
-			Hint:        trustDomain,
+			Hint:        hint,
 		})
 	}
 	return &workloadv1.X509SVIDResponse{Svids: svids}, nil
