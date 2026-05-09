@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/ca"
+	"github.com/arndt-s/spiffe-conformance-test-suite/internal/harnessctl"
 	"github.com/arndt-s/spiffe-conformance-test-suite/suite"
 )
 
@@ -36,6 +37,9 @@ func init() {
 }
 
 func runX10(ctx context.Context, env *suite.TestEnv) error {
+	if err := env.RequireCapability(harnessctl.CapMTLSVerify); err != nil {
+		return err
+	}
 	// Wait for the SDK to be serving a valid SVID first.
 	if _, err := probeUntilSPIFFEID(ctx, env, "spiffe://test.example.org/default", 5*time.Second); err != nil {
 		return fmt.Errorf("waiting for SDK ready: %w", err)

@@ -18,11 +18,13 @@
 package harnessctl
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -113,10 +115,7 @@ func (c *Client) HasCapability(name string) bool {
 
 // FetchJWT asks the harness to call FetchJWTSVID on its Workload API
 // client for the given audience and (optional) SPIFFE ID. Requires the
-// CapJWTFetch capability. Returns the resulting compact-serialized JWT.
-//
-// Wire shape (defined for PR-C, returned in PR-B as ErrCapabilityMissing
-// or ErrControlPortUnavailable):
+// CapJWTFetch capability.
 //
 //	POST /jwt/fetch  {"audience":"<aud>","spiffe_id":"<id>"}
 //	200 {"token":"<compact JWT>"}
@@ -127,7 +126,23 @@ func (c *Client) FetchJWT(audience, spiffeID string) (string, error) {
 	if !c.caps[CapJWTFetch] {
 		return "", fmt.Errorf("%w: %s", ErrCapabilityMissing, CapJWTFetch)
 	}
-	return "", errNotImplementedYet // wired in PR-C
+	body, _ := json.Marshal(map[string]string{"audience": audience, "spiffe_id": spiffeID})
+	resp, err := c.httpClient.Post(c.base+"/jwt/fetch", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("harnessctl: POST /jwt/fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("harnessctl: /jwt/fetch returned %d: %s", resp.StatusCode, raw)
+	}
+	var payload struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", fmt.Errorf("harnessctl: decode /jwt/fetch: %w", err)
+	}
+	return payload.Token, nil
 }
 
 // Identity is a single SVID held by the harness.
@@ -138,6 +153,9 @@ type Identity struct {
 
 // ListIdentities returns the harness's known X.509 SVIDs. Requires
 // CapMultiIdentity.
+//
+//	GET /x509/identities
+//	200 {"identities":[{"spiffe_id":"…","hint":"…"}, …]}
 func (c *Client) ListIdentities() ([]Identity, error) {
 	if c.base == "" {
 		return nil, ErrControlPortUnavailable
@@ -145,11 +163,29 @@ func (c *Client) ListIdentities() ([]Identity, error) {
 	if !c.caps[CapMultiIdentity] {
 		return nil, fmt.Errorf("%w: %s", ErrCapabilityMissing, CapMultiIdentity)
 	}
-	return nil, errNotImplementedYet
+	resp, err := c.httpClient.Get(c.base + "/x509/identities")
+	if err != nil {
+		return nil, fmt.Errorf("harnessctl: GET /x509/identities: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("harnessctl: /x509/identities returned %d: %s", resp.StatusCode, raw)
+	}
+	var payload struct {
+		Identities []Identity `json:"identities"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("harnessctl: decode /x509/identities: %w", err)
+	}
+	return payload.Identities, nil
 }
 
 // IdentityCertPEM returns the leaf cert for a specific SPIFFE ID held
 // by the harness, in PEM form. Requires CapMultiIdentity.
+//
+//	GET /x509/identities/<url-escaped spiffe id>/cert
+//	200 application/x-pem-file
 func (c *Client) IdentityCertPEM(spiffeID string) ([]byte, error) {
 	if c.base == "" {
 		return nil, ErrControlPortUnavailable
@@ -157,12 +193,25 @@ func (c *Client) IdentityCertPEM(spiffeID string) ([]byte, error) {
 	if !c.caps[CapMultiIdentity] {
 		return nil, fmt.Errorf("%w: %s", ErrCapabilityMissing, CapMultiIdentity)
 	}
-	return nil, errNotImplementedYet
+	endpoint := c.base + "/x509/identities/" + url.PathEscape(spiffeID) + "/cert"
+	resp, err := c.httpClient.Get(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("harnessctl: GET %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("harnessctl: %s returned %d: %s", endpoint, resp.StatusCode, raw)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // Reconnect tells the harness to re-create its Workload API client
 // against the current SPIFFE_ENDPOINT_SOCKET value. Requires
 // CapEndpointReconnect.
+//
+//	POST /endpoint/reconnect
+//	204 No Content
 func (c *Client) Reconnect() error {
 	if c.base == "" {
 		return ErrControlPortUnavailable
@@ -170,10 +219,14 @@ func (c *Client) Reconnect() error {
 	if !c.caps[CapEndpointReconnect] {
 		return fmt.Errorf("%w: %s", ErrCapabilityMissing, CapEndpointReconnect)
 	}
-	return errNotImplementedYet
+	resp, err := c.httpClient.Post(c.base+"/endpoint/reconnect", "application/json", nil)
+	if err != nil {
+		return fmt.Errorf("harnessctl: POST /endpoint/reconnect: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("harnessctl: /endpoint/reconnect returned %d: %s", resp.StatusCode, raw)
+	}
+	return nil
 }
-
-// errNotImplementedYet is a placeholder returned by control-port
-// methods until PR-C lands the harness-side protocol. Tests that depend
-// on these methods must be added in PR-E onward.
-var errNotImplementedYet = errors.New("harnessctl: route not implemented until PR-C")

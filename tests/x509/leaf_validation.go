@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/ca"
+	"github.com/arndt-s/spiffe-conformance-test-suite/internal/harnessctl"
 	"github.com/arndt-s/spiffe-conformance-test-suite/suite"
 )
 
@@ -47,6 +48,9 @@ func init() {
 // runX14 — leaf SPIFFE ID without a path component (root path) is invalid
 // per X509-04 / X509-22.
 func runX14(ctx context.Context, env *suite.TestEnv) error {
+	if err := env.RequireCapability(harnessctl.CapMTLSVerify); err != nil {
+		return err
+	}
 	if _, err := probeUntilSPIFFEID(ctx, env, "spiffe://test.example.org/default", 5*time.Second); err != nil {
 		return fmt.Errorf("waiting for SDK ready: %w", err)
 	}
@@ -65,6 +69,9 @@ func runX14(ctx context.Context, env *suite.TestEnv) error {
 
 // runX15 — Key Usage extension absent is a violation of X509-12.
 func runX15(ctx context.Context, env *suite.TestEnv) error {
+	if err := env.RequireCapability(harnessctl.CapMTLSVerify); err != nil {
+		return err
+	}
 	if _, err := probeUntilSPIFFEID(ctx, env, "spiffe://test.example.org/default", 5*time.Second); err != nil {
 		return fmt.Errorf("waiting for SDK ready: %w", err)
 	}
@@ -83,6 +90,9 @@ func runX15(ctx context.Context, env *suite.TestEnv) error {
 // runX16 — leaf must have digitalSignature (X509-14). A cert with only
 // keyAgreement is missing the required flag.
 func runX16(ctx context.Context, env *suite.TestEnv) error {
+	if err := env.RequireCapability(harnessctl.CapMTLSVerify); err != nil {
+		return err
+	}
 	if _, err := probeUntilSPIFFEID(ctx, env, "spiffe://test.example.org/default", 5*time.Second); err != nil {
 		return fmt.Errorf("waiting for SDK ready: %w", err)
 	}
@@ -101,6 +111,9 @@ func runX16(ctx context.Context, env *suite.TestEnv) error {
 // runX17 — leaf MUST NOT set cRLSign (X509-15). Tested separately from
 // keyCertSign (X11) because some SDKs may check the two flags independently.
 func runX17(ctx context.Context, env *suite.TestEnv) error {
+	if err := env.RequireCapability(harnessctl.CapMTLSVerify); err != nil {
+		return err
+	}
 	if _, err := probeUntilSPIFFEID(ctx, env, "spiffe://test.example.org/default", 5*time.Second); err != nil {
 		return fmt.Errorf("waiting for SDK ready: %w", err)
 	}
@@ -120,6 +133,9 @@ func runX17(ctx context.Context, env *suite.TestEnv) error {
 // and clientAuth (X509-17). A cert that has EKU but neither value should
 // be rejected.
 func runX18(ctx context.Context, env *suite.TestEnv) error {
+	if err := env.RequireCapability(harnessctl.CapMTLSVerify); err != nil {
+		return err
+	}
 	if _, err := probeUntilSPIFFEID(ctx, env, "spiffe://test.example.org/default", 5*time.Second); err != nil {
 		return fmt.Errorf("waiting for SDK ready: %w", err)
 	}
@@ -137,6 +153,9 @@ func runX18(ctx context.Context, env *suite.TestEnv) error {
 
 // runX19 — a cert with no URI SAN cannot be a valid SVID (X509-01).
 func runX19(ctx context.Context, env *suite.TestEnv) error {
+	if err := env.RequireCapability(harnessctl.CapMTLSVerify); err != nil {
+		return err
+	}
 	if _, err := probeUntilSPIFFEID(ctx, env, "spiffe://test.example.org/default", 5*time.Second); err != nil {
 		return fmt.Errorf("waiting for SDK ready: %w", err)
 	}
