@@ -1,0 +1,66 @@
+name: Conformance examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  go-spiffe:
+    name: go-spiffe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build harness
+        run: go build -o sdks/go-spiffe/go-spiffe ./sdks/go-spiffe
+
+      - name: Run conformance suite
+        uses: ./
+        with:
+          cmd: ./sdks/go-spiffe/go-spiffe
+          output: json
+          results-file: go-spiffe-results.json
+          suite-version: ${{ github.sha }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-spiffe-results
+          path: go-spiffe-results.json
+
+  defakto-spiffe-ts:
+    name: defakto-spiffe-ts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install and build harness
+        working-directory: sdks/defakto-spiffe-ts
+        run: |
+          npm install
+          npm run build
+
+      - name: Run conformance suite
+        uses: ./
+        with:
+          cmd: node
+          args: sdks/defakto-spiffe-ts/dist/index.js
+          output: json
+          results-file: defakto-spiffe-ts-results.json
+          suite-version: ${{ github.sha }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: defakto-spiffe-ts-results
+          path: defakto-spiffe-ts-results.json
