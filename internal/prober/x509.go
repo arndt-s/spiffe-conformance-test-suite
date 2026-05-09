@@ -9,35 +9,6 @@ import (
 	"time"
 )
 
-// ProbeX509InsecureForTesting dials the SDK's X.509 port without client auth
-// and without server certificate verification. Intended for skeleton/smoke tests
-// only; production test cases should use ProbeX509 with a proper trust bundle.
-func ProbeX509InsecureForTesting(port int) (*X509ProbeResult, error) {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	conn, err := tls.DialWithDialer(
-		&net.Dialer{Timeout: 5 * time.Second},
-		"tcp",
-		addr,
-		&tls.Config{InsecureSkipVerify: true}, //nolint:gosec // intentional for test skeleton
-	)
-	if err != nil {
-		return nil, fmt.Errorf("TLS dial %s: %w", addr, err)
-	}
-	defer conn.Close()
-
-	state := conn.ConnectionState()
-	result := &X509ProbeResult{
-		PeerCerts: state.PeerCertificates,
-	}
-	if len(state.PeerCertificates) > 0 {
-		leaf := state.PeerCertificates[0]
-		for _, u := range leaf.URIs {
-			result.SpiffeIDs = append(result.SpiffeIDs, u.String())
-		}
-	}
-	return result, nil
-}
-
 // X509ProbeResult holds the result of probing the SDK's X.509 port.
 type X509ProbeResult struct {
 	// PeerCerts is the full certificate chain presented by the peer (leaf first).
