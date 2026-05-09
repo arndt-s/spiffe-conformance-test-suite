@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"sync"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/arndt-s/spiffe-conformance-test-suite/internal/ca"
 )
 
 // MethodCall records a single observation of an RPC invocation.
@@ -224,7 +227,11 @@ func (s *Server) FetchX509Bundles(
 		if state != nil {
 			bundles := map[string][]byte{}
 			for _, m := range state.Materials {
-				bundles[m.CACert.URIs[0].Host] = m.CACertDER
+				td := materialTrustDomain(m)
+				if td == "" {
+					continue
+				}
+				bundles[td] = state.Corruption.Bundle.Apply(m.CACertDER)
 			}
 			if err := stream.Send(&workloadv1.X509BundlesResponse{Bundles: bundles}); err != nil {
 				return err
@@ -288,7 +295,7 @@ func (s *Server) FetchJWTBundles(
 	bundles := map[string][]byte{}
 	if state != nil {
 		for td, jwks := range state.JWKSBundle {
-			bundles[td] = jwks
+			bundles[td] = state.Corruption.JWKSBytes.Apply(jwks)
 		}
 	}
 	if err := stream.Send(&workloadv1.JWTBundlesResponse{Bundles: bundles}); err != nil {
@@ -312,7 +319,8 @@ func (s *Server) ValidateJWTSVID(
 	return nil, status.Error(codes.Unimplemented, "ValidateJWTSVID not implemented")
 }
 
-// x509StateToProto converts X509State to the wire proto.
+// x509StateToProto converts X509State to the wire proto, applying any
+// configured per-field corruption overrides.
 func x509StateToProto(state *X509State) (*workloadv1.X509SVIDResponse, error) {
 	var svids []*workloadv1.X509SVID
 	for i, m := range state.Materials {
@@ -322,35 +330,38 @@ func x509StateToProto(state *X509State) (*workloadv1.X509SVIDResponse, error) {
 		}
 		bundle := m.CACertDER
 		if len(state.TrustBundle) > 0 {
-			// flatten custom trust bundle
 			var flat []byte
 			for _, b := range state.TrustBundle {
 				flat = append(flat, b...)
 			}
 			bundle = flat
 		}
-		// Determine trust domain from CA cert URIs if present, else from SVID.
-		trustDomain := ""
-		if len(m.CACert.URIs) > 0 {
-			trustDomain = m.CACert.URIs[0].Host
-		}
-		hint := trustDomain
+		hint := materialTrustDomain(m)
 		if i < len(state.HintOverrides) && state.HintOverrides[i] != "" {
 			hint = state.HintOverrides[i]
 		}
-		svidBytes := flattenDER(m.CertChainDER())
-		if state.EmptyX509SVIDBytes {
-			svidBytes = nil
-		}
 		svids = append(svids, &workloadv1.X509SVID{
 			SpiffeId:    m.SPIFFEID,
-			X509Svid:    svidBytes,
-			X509SvidKey: der,
-			Bundle:      bundle,
+			X509Svid:    state.Corruption.SVIDBytes.Apply(flattenDER(m.CertChainDER())),
+			X509SvidKey: state.Corruption.KeyBytes.Apply(der),
+			Bundle:      state.Corruption.Bundle.Apply(bundle),
 			Hint:        hint,
 		})
 	}
 	return &workloadv1.X509SVIDResponse{Svids: svids}, nil
+}
+
+// materialTrustDomain returns the trust-domain host for an X.509 SVID
+// material, preferring the CA cert's URI SAN and falling back to the
+// SPIFFE ID's host. Returns "" if neither is parseable.
+func materialTrustDomain(m *ca.X509SVIDMaterial) string {
+	if m.CACert != nil && len(m.CACert.URIs) > 0 {
+		return m.CACert.URIs[0].Host
+	}
+	if u, err := url.Parse(m.SPIFFEID); err == nil {
+		return u.Host
+	}
+	return ""
 }
 
 func flattenDER(chain [][]byte) []byte {

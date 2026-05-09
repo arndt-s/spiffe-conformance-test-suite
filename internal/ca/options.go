@@ -91,6 +91,7 @@ type jwtSVIDConfig struct {
 	deleteClaims  []string
 	extraHeaders  map[string]interface{}
 	deleteHeaders []string
+	signingKID    string
 }
 
 func defaultJWTConfig() jwtSVIDConfig {
@@ -141,4 +142,41 @@ func WithJWTHeader(key string, value interface{}) JWTSVIDOption {
 // been set. Useful for testing optional fields like "typ".
 func WithJWTDeleteHeader(key string) JWTSVIDOption {
 	return func(c *jwtSVIDConfig) { c.deleteHeaders = append(c.deleteHeaders, key) }
+}
+
+// WithJWTSigningKey selects which JWT signing key (by kid) is used to sign
+// the issued token. If unset, IssueJWT picks the first registered "sig"
+// (or untyped) key.
+func WithJWTSigningKey(kid string) JWTSVIDOption {
+	return func(c *jwtSVIDConfig) { c.signingKID = kid }
+}
+
+// JWTKeyOption configures a JWT signing key registered via (*CA).AddJWTKey.
+type JWTKeyOption func(*jwtKeyConfig)
+
+type jwtKeyConfig struct {
+	alg string
+	use string
+	kid string
+}
+
+func defaultJWTKeyConfig() jwtKeyConfig {
+	return jwtKeyConfig{alg: "ES256", use: "sig"}
+}
+
+// WithJWTKeyAlg sets the JWS algorithm for the registered key. Supported
+// values are RS256/RS384/RS512, ES256/ES384/ES512, PS256/PS384/PS512.
+func WithJWTKeyAlg(alg string) JWTKeyOption {
+	return func(c *jwtKeyConfig) { c.alg = alg }
+}
+
+// WithJWTKeyUse sets the JWK "use" parameter ("sig", "enc", or empty).
+func WithJWTKeyUse(use string) JWTKeyOption {
+	return func(c *jwtKeyConfig) { c.use = use }
+}
+
+// WithJWTKeyID sets an explicit kid for the registered key. If unset,
+// AddJWTKey assigns one of the form "key-<n>".
+func WithJWTKeyID(kid string) JWTKeyOption {
+	return func(c *jwtKeyConfig) { c.kid = kid }
 }

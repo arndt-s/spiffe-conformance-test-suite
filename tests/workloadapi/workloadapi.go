@@ -83,9 +83,11 @@ func runW5(ctx context.Context, env *suite.TestEnv) error {
 		return fmt.Errorf("issue bad SVID: %w", err)
 	}
 	env.SetX509State(&mockwlapi.X509State{
-		Materials:          []*ca.X509SVIDMaterial{bad},
-		TrustBundle:        [][]byte{env.CA().CACertDER()},
-		EmptyX509SVIDBytes: true,
+		Materials:   []*ca.X509SVIDMaterial{bad},
+		TrustBundle: [][]byte{env.CA().CACertDER()},
+		Corruption: mockwlapi.X509Corruption{
+			SVIDBytes: mockwlapi.ByteOverride{Mode: mockwlapi.OverrideEmpty},
+		},
 	})
 
 	// Give the SDK time to ingest (and reject) the malformed response.
