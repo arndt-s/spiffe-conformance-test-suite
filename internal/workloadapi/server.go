@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	workloadv1 "github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
 	"google.golang.org/grpc"
@@ -12,6 +13,13 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+// MethodCall records a single observation of an RPC invocation.
+type MethodCall struct {
+	Method     string
+	At         time.Time
+	HeaderSeen bool
+}
 
 // Server is a controllable mock SPIFFE Workload API gRPC server.
 type Server struct {
@@ -25,13 +33,29 @@ type Server struct {
 	// notify is closed and replaced whenever state is updated.
 	// Streaming RPCs select on this to detect state changes.
 	notify chan struct{}
+
+	// failMode, when set for a method, causes the corresponding RPC
+	// to immediately return that gRPC error code instead of serving state.
+	// Keyed by RPC method short name: "FetchX509SVID", "FetchX509Bundles",
+	// "FetchJWTSVID", "FetchJWTBundles".
+	failMode map[string]codes.Code
+
+	// closeStreamOnce, when set, causes the named streaming RPC to send
+	// its current state once and then return OK (closing the stream)
+	// before the next state change. The flag is cleared after the first use.
+	closeStreamOnce map[string]bool
+
+	// calls records every RPC invocation observed by the server.
+	calls []MethodCall
 }
 
 // NewServer creates a Server that will listen on the given UDS path.
 func NewServer(socketPath string) *Server {
 	s := &Server{
-		socketPath: socketPath,
-		notify:     make(chan struct{}),
+		socketPath:      socketPath,
+		notify:          make(chan struct{}),
+		failMode:        make(map[string]codes.Code),
+		closeStreamOnce: make(map[string]bool),
 	}
 	s.grpcServer = grpc.NewServer()
 	workloadv1.RegisterSpiffeWorkloadAPIServer(s.grpcServer, s)
@@ -73,16 +97,70 @@ func (s *Server) SetJWTState(state *JWTState) {
 // SocketPath returns the UDS path.
 func (s *Server) SocketPath() string { return s.socketPath }
 
+// SetFailMode causes the named RPC to return the given gRPC code on every
+// subsequent invocation. Pass codes.OK to clear the override.
+// Method names: "FetchX509SVID", "FetchX509Bundles", "FetchJWTSVID", "FetchJWTBundles".
+func (s *Server) SetFailMode(method string, code codes.Code) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if code == codes.OK {
+		delete(s.failMode, method)
+		return
+	}
+	s.failMode[method] = code
+}
+
+// CloseStreamOnce flags the named streaming RPC to return cleanly (OK)
+// on its next iteration, simulating a server-initiated stream termination.
+// The flag clears after one use. The method also wakes any in-flight
+// stream waiting on the notify channel so it observes the flag promptly.
+func (s *Server) CloseStreamOnce(method string) {
+	s.mu.Lock()
+	s.closeStreamOnce[method] = true
+	old := s.notify
+	s.notify = make(chan struct{})
+	s.mu.Unlock()
+	close(old)
+}
+
+// Calls returns a snapshot of every RPC invocation recorded so far.
+func (s *Server) Calls() []MethodCall {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]MethodCall, len(s.calls))
+	copy(out, s.calls)
+	return out
+}
+
+// ResetCalls clears the recorded RPC invocation log.
+func (s *Server) ResetCalls() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = nil
+}
+
 // --- gRPC handler implementations ---
 
-func checkWorkloadHeader(ctx context.Context) error {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return status.Error(codes.InvalidArgument, "missing metadata")
+// recordCall logs an invocation and validates the workload metadata header.
+// It returns the configured failMode error, if any, after recording.
+func (s *Server) recordCall(ctx context.Context, method string) error {
+	hdrOK := false
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		vals := md.Get("workload.spiffe.io")
+		if len(vals) > 0 && vals[0] == "true" {
+			hdrOK = true
+		}
 	}
-	vals := md.Get("workload.spiffe.io")
-	if len(vals) == 0 || vals[0] != "true" {
+	s.mu.Lock()
+	s.calls = append(s.calls, MethodCall{Method: method, At: time.Now(), HeaderSeen: hdrOK})
+	failCode, hasFail := s.failMode[method]
+	s.mu.Unlock()
+
+	if !hdrOK {
 		return status.Error(codes.InvalidArgument, "missing workload.spiffe.io:true header")
+	}
+	if hasFail {
+		return status.Error(failCode, "configured fail mode")
 	}
 	return nil
 }
@@ -91,7 +169,7 @@ func (s *Server) FetchX509SVID(
 	_ *workloadv1.X509SVIDRequest,
 	stream workloadv1.SpiffeWorkloadAPI_FetchX509SVIDServer,
 ) error {
-	if err := checkWorkloadHeader(stream.Context()); err != nil {
+	if err := s.recordCall(stream.Context(), "FetchX509SVID"); err != nil {
 		return err
 	}
 
@@ -99,6 +177,7 @@ func (s *Server) FetchX509SVID(
 		s.mu.RLock()
 		state := s.x509
 		notifyCh := s.notify
+		closeOnce := s.closeStreamOnce["FetchX509SVID"]
 		s.mu.RUnlock()
 
 		if state != nil {
@@ -109,6 +188,13 @@ func (s *Server) FetchX509SVID(
 			if err := stream.Send(resp); err != nil {
 				return err
 			}
+		}
+
+		if closeOnce {
+			s.mu.Lock()
+			delete(s.closeStreamOnce, "FetchX509SVID")
+			s.mu.Unlock()
+			return nil
 		}
 
 		select {
@@ -124,7 +210,7 @@ func (s *Server) FetchX509Bundles(
 	_ *workloadv1.X509BundlesRequest,
 	stream workloadv1.SpiffeWorkloadAPI_FetchX509BundlesServer,
 ) error {
-	if err := checkWorkloadHeader(stream.Context()); err != nil {
+	if err := s.recordCall(stream.Context(), "FetchX509Bundles"); err != nil {
 		return err
 	}
 
@@ -132,6 +218,7 @@ func (s *Server) FetchX509Bundles(
 		s.mu.RLock()
 		state := s.x509
 		notifyCh := s.notify
+		closeOnce := s.closeStreamOnce["FetchX509Bundles"]
 		s.mu.RUnlock()
 
 		if state != nil {
@@ -142,6 +229,13 @@ func (s *Server) FetchX509Bundles(
 			if err := stream.Send(&workloadv1.X509BundlesResponse{Bundles: bundles}); err != nil {
 				return err
 			}
+		}
+
+		if closeOnce {
+			s.mu.Lock()
+			delete(s.closeStreamOnce, "FetchX509Bundles")
+			s.mu.Unlock()
+			return nil
 		}
 
 		select {
@@ -156,7 +250,7 @@ func (s *Server) FetchJWTSVID(
 	ctx context.Context,
 	req *workloadv1.JWTSVIDRequest,
 ) (*workloadv1.JWTSVIDResponse, error) {
-	if err := checkWorkloadHeader(ctx); err != nil {
+	if err := s.recordCall(ctx, "FetchJWTSVID"); err != nil {
 		return nil, err
 	}
 
@@ -182,12 +276,13 @@ func (s *Server) FetchJWTBundles(
 	_ *workloadv1.JWTBundlesRequest,
 	stream workloadv1.SpiffeWorkloadAPI_FetchJWTBundlesServer,
 ) error {
-	if err := checkWorkloadHeader(stream.Context()); err != nil {
+	if err := s.recordCall(stream.Context(), "FetchJWTBundles"); err != nil {
 		return err
 	}
 
 	s.mu.RLock()
 	state := s.jwt
+	closeOnce := s.closeStreamOnce["FetchJWTBundles"]
 	s.mu.RUnlock()
 
 	bundles := map[string][]byte{}
@@ -198,6 +293,12 @@ func (s *Server) FetchJWTBundles(
 	}
 	if err := stream.Send(&workloadv1.JWTBundlesResponse{Bundles: bundles}); err != nil {
 		return err
+	}
+	if closeOnce {
+		s.mu.Lock()
+		delete(s.closeStreamOnce, "FetchJWTBundles")
+		s.mu.Unlock()
+		return nil
 	}
 	<-stream.Context().Done()
 	return nil

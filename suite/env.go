@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"google.golang.org/grpc/codes"
+
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/ca"
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/harness"
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/prober"
@@ -179,6 +181,31 @@ func (e *TestEnv) ServeJWT(audience string, materials ...*ca.JWTSVIDMaterial) er
 // SetX509State is a raw escape hatch for setting X.509 server state directly.
 func (e *TestEnv) SetX509State(state *workloadapi.X509State) {
 	e.server.SetX509State(state)
+}
+
+// SetFailMode forces the named RPC method to return the given gRPC code on
+// every subsequent call. Pass codes.OK to clear. Method names are the short
+// gRPC names: "FetchX509SVID", "FetchX509Bundles", "FetchJWTSVID",
+// "FetchJWTBundles".
+func (e *TestEnv) SetFailMode(method string, code codes.Code) {
+	e.server.SetFailMode(method, code)
+}
+
+// CloseStreamOnce signals the named streaming RPC to send its current state
+// once and then return cleanly, simulating a server-initiated stream close.
+func (e *TestEnv) CloseStreamOnce(method string) {
+	e.server.CloseStreamOnce(method)
+}
+
+// Calls returns a snapshot of every recorded RPC invocation against the
+// mock workload API server.
+func (e *TestEnv) Calls() []workloadapi.MethodCall {
+	return e.server.Calls()
+}
+
+// ResetCalls clears the recorded RPC invocation log.
+func (e *TestEnv) ResetCalls() {
+	e.server.ResetCalls()
 }
 
 // SetJWTState is a raw escape hatch for setting JWT server state directly.
