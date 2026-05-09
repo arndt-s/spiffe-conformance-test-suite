@@ -26,7 +26,7 @@ jobs:
           cmd: ./sdks/go-spiffe/go-spiffe
           output: json
           results-file: go-spiffe-results.json
-          suite-version: ${{ github.head_ref || github.ref_name }}
+          suite-version: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -57,7 +57,7 @@ jobs:
           args: sdks/defakto-spiffe-ts/dist/index.js
           output: json
           results-file: defakto-spiffe-ts-results.json
-          suite-version: ${{ github.head_ref || github.ref_name }}
+          suite-version: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/upload-artifact@v4
         if: always()
