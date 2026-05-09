@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -15,11 +14,13 @@ import (
 )
 
 type runFlags struct {
-	cmd     string
-	args    string
-	run     string
-	output  string
-	verbose bool
+	cmd          string
+	args         string
+	tests        string
+	allowFailure string
+	output       string
+	verbose      bool
+	strict       bool
 }
 
 func newRunCmd() *cobra.Command {
@@ -31,20 +32,25 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runSuite(cmd.Context(), cmd, flags)
 		},
+		SilenceUsage: true,
 	}
 
 	cmd.Flags().StringVar(&flags.cmd, "cmd", "", "Path to the SDK harness binary (required)")
 	cmd.Flags().StringVar(&flags.args, "args", "", "Comma-separated arguments to pass to the harness")
-	cmd.Flags().StringVar(&flags.run, "run", "", "Run only the named test case (e.g. X1)")
+	cmd.Flags().StringVar(&flags.tests, "tests", "", "Comma-separated list of test cases to run (e.g. X1,J3); empty runs all")
+	cmd.Flags().StringVar(&flags.allowFailure, "allow-failure", "", "Comma-separated list of tests whose failures should be tolerated (reported as SKIP)")
 	cmd.Flags().StringVar(&flags.output, "output", "text", "Output format: text or json")
 	cmd.Flags().BoolVarP(&flags.verbose, "verbose", "v", false, "Enable verbose logging")
+	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Exit non-zero if any non-tolerated test fails or errors")
 	_ = cmd.MarkFlagRequired("cmd")
 
 	return cmd
 }
 
 func runSuite(ctx context.Context, cmd *cobra.Command, flags runFlags) error {
-	args := parseArgs(flags.args)
+	args := parseList(flags.args)
+	include := parseList(flags.tests)
+	allow := toSet(parseList(flags.allowFailure))
 
 	var stOut, stErr io.Writer
 	if flags.verbose {
@@ -58,18 +64,60 @@ func runSuite(ctx context.Context, cmd *cobra.Command, flags runFlags) error {
 
 	cfg := suite.RunnerConfig{Cmd: flags.cmd, Args: args, StOut: stOut, StErr: stErr}
 
+	cases, err := selectCases(include)
+	if err != nil {
+		return err
+	}
+
 	var report result.Report
-	if flags.run != "" {
-		res, err := suite.RunOne(ctx, flags.run, cfg)
+	for _, tc := range cases {
+		res, err := suite.RunOne(ctx, tc.Name, cfg)
 		if err != nil {
 			return err
 		}
+		if allow[res.Name] && (res.Status == result.StatusFail || res.Status == result.StatusError) {
+			orig := res.Message
+			res.Status = result.StatusSkip
+			if orig != "" {
+				res.Message = "tolerated failure: " + orig
+			} else {
+				res.Message = "tolerated failure"
+			}
+		}
 		report.Add(res)
-	} else {
-		report = suite.RunAll(ctx, cfg)
 	}
 
-	return printReport(report, flags.output)
+	if err := printReport(report, flags.output); err != nil {
+		return err
+	}
+
+	if flags.strict && (report.Failed > 0 || report.Errors > 0) {
+		return fmt.Errorf("strict: %d failed, %d errored", report.Failed, report.Errors)
+	}
+	return nil
+}
+
+func selectCases(include []string) ([]suite.TestCase, error) {
+	all := suite.All()
+	if len(include) == 0 {
+		return all, nil
+	}
+	want := toSet(include)
+	var out []suite.TestCase
+	for _, tc := range all {
+		if want[tc.Name] {
+			out = append(out, tc)
+			delete(want, tc.Name)
+		}
+	}
+	if len(want) > 0 {
+		missing := make([]string, 0, len(want))
+		for n := range want {
+			missing = append(missing, n)
+		}
+		return nil, fmt.Errorf("unknown test case(s): %s", strings.Join(missing, ","))
+	}
+	return out, nil
 }
 
 func printReport(report result.Report, format string) error {
@@ -93,19 +141,24 @@ func printReport(report result.Report, format string) error {
 	return nil
 }
 
-func parseArgs(s string) []string {
+func parseList(s string) []string {
 	if s == "" {
 		return nil
 	}
-	var args []string
+	var out []string
 	for _, a := range strings.Split(s, ",") {
 		a = strings.TrimSpace(a)
 		if a != "" {
-			args = append(args, a)
+			out = append(out, a)
 		}
 	}
-	return args
+	return out
 }
 
-// Ensure json import is used (it's used in printReport via report.JSON()).
-var _ = json.Marshal
+func toSet(items []string) map[string]bool {
+	m := make(map[string]bool, len(items))
+	for _, i := range items {
+		m[i] = true
+	}
+	return m
+}

@@ -93,3 +93,49 @@ The test suite will connect to this port and verify:
 - **J4**: Expiry handling — confirm SDK rejects expired JWTs
 - **J5**: Bundle consistency — verify JWT validation uses current bundle
 
+## GitHub Action
+
+This repository ships a composite GitHub Action that installs the suite and runs it against your SDK harness.
+
+```yaml
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build your SDK harness here, e.g.:
+      # - run: go build -o ./bin/harness ./cmd/harness
+
+      - uses: arndt-s/spiffe-conformance-test-suite@v1
+        with:
+          cmd: ./bin/harness
+          args: --foo,--bar
+          tests: X1,X2,J1,J3        # optional; runs all if omitted
+          allow-failure: X10,X11    # optional; failures here become SKIP
+          strict: 'true'            # fail the job on any non-tolerated failure
+          output: json
+          results-file: conformance.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-results
+          path: conformance.json
+```
+
+### Inputs
+
+| Input            | Required | Default  | Description                                                                                |
+| ---------------- | -------- | -------- | ------------------------------------------------------------------------------------------ |
+| `cmd`            | yes      | —        | Path to the SDK harness binary to test.                                                    |
+| `args`           | no       | `''`     | Comma-separated arguments to pass to the harness.                                          |
+| `tests`          | no       | `''`     | Comma-separated test cases to run (e.g. `X1,J3`). Empty runs all.                          |
+| `allow-failure`  | no       | `''`     | Comma-separated tests whose failures are tolerated (reported as `SKIP`, ignored by strict).|
+| `strict`         | no       | `false`  | If `true`, fail the action on any non-tolerated test failure or error.                     |
+| `output`         | no       | `text`   | Output format: `text` or `json`.                                                           |
+| `results-file`   | no       | `''`     | Also write suite output to this path.                                                      |
+| `verbose`        | no       | `false`  | Enable verbose logging.                                                                    |
+| `suite-version`  | no       | `latest` | Suite version to install (git tag, branch, or `latest`).                                   |
+| `go-version`     | no       | `stable` | Go toolchain version used to install the suite.                                            |
+

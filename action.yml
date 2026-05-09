@@ -1,0 +1,101 @@
+name: SPIFFE Conformance Test Suite
+description: Run the SPIFFE conformance test suite against an SDK harness binary.
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  cmd:
+    description: Path to the SDK harness binary to test.
+    required: true
+  args:
+    description: Comma-separated arguments to pass to the harness.
+    required: false
+    default: ''
+  tests:
+    description: Comma-separated list of test cases to run (e.g. X1,J3). Empty runs all.
+    required: false
+    default: ''
+  allow-failure:
+    description: Comma-separated list of test cases whose failures should be tolerated. Tolerated failures are reported as SKIP and do not cause strict mode to fail.
+    required: false
+    default: ''
+  strict:
+    description: If true, the action fails when any non-tolerated test fails or errors.
+    required: false
+    default: 'false'
+  output:
+    description: 'Output format: text or json.'
+    required: false
+    default: text
+  results-file:
+    description: If set, the suite output is also written to this file (useful with output=json).
+    required: false
+    default: ''
+  verbose:
+    description: Enable verbose logging.
+    required: false
+    default: 'false'
+  suite-version:
+    description: Version of the conformance suite to install (git ref, tag, or "latest").
+    required: false
+    default: latest
+  go-version:
+    description: Go version to set up for installing the suite.
+    required: false
+    default: stable
+
+outputs:
+  results-file:
+    description: Path to the results file, if results-file was provided.
+    value: ${{ inputs.results-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+
+    - name: Install conformance suite
+      shell: bash
+      run: |
+        set -euo pipefail
+        go install "github.com/arndt-s/spiffe-conformance-test-suite/cmd/suite@${{ inputs.suite-version }}"
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+    - name: Run conformance suite
+      shell: bash
+      env:
+        INPUT_CMD: ${{ inputs.cmd }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_TESTS: ${{ inputs.tests }}
+        INPUT_ALLOW_FAILURE: ${{ inputs.allow-failure }}
+        INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_RESULTS_FILE: ${{ inputs.results-file }}
+        INPUT_VERBOSE: ${{ inputs.verbose }}
+      run: |
+        set -euo pipefail
+        flags=( --cmd "$INPUT_CMD" --output "$INPUT_OUTPUT" )
+        if [ -n "$INPUT_ARGS" ]; then
+          flags+=( --args "$INPUT_ARGS" )
+        fi
+        if [ -n "$INPUT_TESTS" ]; then
+          flags+=( --tests "$INPUT_TESTS" )
+        fi
+        if [ -n "$INPUT_ALLOW_FAILURE" ]; then
+          flags+=( --allow-failure "$INPUT_ALLOW_FAILURE" )
+        fi
+        if [ "$INPUT_STRICT" = "true" ]; then
+          flags+=( --strict )
+        fi
+        if [ "$INPUT_VERBOSE" = "true" ]; then
+          flags+=( --verbose )
+        fi
+        if [ -n "$INPUT_RESULTS_FILE" ]; then
+          suite run "${flags[@]}" | tee "$INPUT_RESULTS_FILE"
+        else
+          suite run "${flags[@]}"
+        fi
