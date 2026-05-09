@@ -28,6 +28,12 @@ type TestEnv struct {
 	probeCert tls.Certificate // valid client cert for ProbeX509 calls
 	trustPool *x509.CertPool  // trust pool built from test CA
 	control   *harnessctl.Client
+
+	// cmd / args are stashed so capability-gated helpers (e.g.
+	// SpawnHarnessWithOverride) can re-launch the SDK harness with
+	// different env vars or timeouts.
+	cmd  string
+	args []string
 }
 
 // newTestEnv creates and wires up a complete test environment.
@@ -121,6 +127,8 @@ func newTestEnv(ctx context.Context, cmd string, args []string, stdout, stderr i
 		probeCert: probeSVID.TLSCertificate(),
 		trustPool: authority.CACertPool(),
 		control:   control,
+		cmd:       cmd,
+		args:      args,
 	}
 
 	fullCleanup := func() {

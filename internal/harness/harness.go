@@ -3,6 +3,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,12 @@ import (
 )
 
 const defaultReadinessTimeout = 5 * time.Minute
+
+// ErrReadinessTimeout is returned by Start when the subprocess does not
+// reach READY within the configured ReadinessTimeout. Tests that
+// intentionally spawn a broken harness (e.g. E3/E4 malformed
+// SPIFFE_ENDPOINT_SOCKET) check for this with errors.Is.
+var ErrReadinessTimeout = errors.New("harness: readiness timeout")
 
 // Config holds the parameters for spawning the SDK harness.
 type Config struct {
@@ -111,7 +118,7 @@ func Start(ctx context.Context, cfg Config) (*RunningProcess, error) {
 		cancel()
 		_ = cmd.Process.Kill()
 		procCancel()
-		return nil, fmt.Errorf("readiness timeout after %s", timeout)
+		return nil, fmt.Errorf("%w after %s", ErrReadinessTimeout, timeout)
 	case res := <-ch:
 		cancel()
 		if res.err != nil {
