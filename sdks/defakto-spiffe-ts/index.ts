@@ -56,11 +56,8 @@ async function main() {
     }
   })();
 
-  tlsServer.listen(0, () => {
-    const address = tlsServer.address() as net.AddressInfo;
-    const x509Port = address.port;
-    console.log(`SPIFFE_X509_PORT=${x509Port}`);
-  });
+  // X.509 port is bound below alongside the other listeners so the
+  // readiness announcement is emitted in one batch.
 
   // JWT HTTP server
   const httpServer = http.createServer(async (req, res) => {
@@ -128,11 +125,55 @@ async function main() {
     }
   });
 
+  // Control HTTP server. The harness conformance contract (v2) requires
+  // every harness to expose this port; capability-gated tests (such as
+  // X10–X19's mTLS client-cert validation) probe /capabilities and self
+  // skip when the corresponding capability is not advertised. This TS
+  // harness intentionally advertises no capabilities yet — full mtls-
+  // verify, jwt-fetch, multi-identity, and endpoint-reconnect support
+  // is deferred to a follow-up PR.
+  const supportedCaps: string[] = [];
+  const controlServer = http.createServer((req, res) => {
+    if (req.url === '/capabilities' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ caps: supportedCaps }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  let x509Port = 0;
+  let jwtPort = 0;
+  let controlPort = 0;
+  let announced = false;
+  const announceIfReady = () => {
+    if (announced) return;
+    if (x509Port && jwtPort && controlPort) {
+      console.log(`SPIFFE_X509_PORT=${x509Port}`);
+      console.log(`SPIFFE_JWT_PORT=${jwtPort}`);
+      console.log(`SPIFFE_CONTROL_PORT=${controlPort}`);
+      console.log('READY');
+      announced = true;
+    }
+  };
+
+  tlsServer.listen(0, () => {
+    const address = tlsServer.address() as net.AddressInfo;
+    x509Port = address.port;
+    announceIfReady();
+  });
+
   httpServer.listen(0, () => {
     const address = httpServer.address() as net.AddressInfo;
-    const jwtPort = address.port;
-    console.log(`SPIFFE_JWT_PORT=${jwtPort}`);
-    console.log('READY');
+    jwtPort = address.port;
+    announceIfReady();
+  });
+
+  controlServer.listen(0, () => {
+    const address = controlServer.address() as net.AddressInfo;
+    controlPort = address.port;
+    announceIfReady();
   });
 
   // Handle graceful shutdown
@@ -140,6 +181,7 @@ async function main() {
     console.log('Shutting down...');
     httpServer.close();
     tlsServer.close();
+    controlServer.close();
     await client.close();
     process.exit(0);
   };

@@ -3,15 +3,21 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 )
 
 const defaultReadinessTimeout = 5 * time.Minute
+
+// ErrReadinessTimeout is returned by Start when the subprocess does not
+// reach READY within the configured ReadinessTimeout. Tests that
+// intentionally spawn a broken harness (e.g. E3/E4 malformed
+// SPIFFE_ENDPOINT_SOCKET) check for this with errors.Is.
+var ErrReadinessTimeout = errors.New("harness: readiness timeout")
 
 // Config holds the parameters for spawning the SDK harness.
 type Config struct {
@@ -112,7 +118,7 @@ func Start(ctx context.Context, cfg Config) (*RunningProcess, error) {
 		cancel()
 		_ = cmd.Process.Kill()
 		procCancel()
-		return nil, fmt.Errorf("readiness timeout after %s", timeout)
+		return nil, fmt.Errorf("%w after %s", ErrReadinessTimeout, timeout)
 	case res := <-ch:
 		cancel()
 		if res.err != nil {
@@ -136,41 +142,17 @@ func (rp *RunningProcess) X509Port() int { return rp.Readiness.X509Port }
 // JWTPort returns the port on which the harness serves JWT SVIDs.
 func (rp *RunningProcess) JWTPort() int { return rp.Readiness.JWTPort }
 
+// ControlPort returns the harness's control HTTP port, or 0 if the
+// harness did not advertise one.
+func (rp *RunningProcess) ControlPort() int { return rp.Readiness.ControlPort }
+
+// buildEnv assembles the env slice for the subprocess. os/exec respects
+// the last occurrence of any duplicate KEY=VAL entry, so callers can
+// override SPIFFE_ENDPOINT_SOCKET (or anything else) by appending to
+// ExtraEnv.
 func buildEnv(cfg Config) []string {
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("SPIFFE_ENDPOINT_SOCKET=unix://%s", cfg.SocketPath))
 	env = append(env, cfg.ExtraEnv...)
-	return filterDuplicates(env)
-}
-
-// filterDuplicates keeps the last occurrence of each KEY= entry.
-func filterDuplicates(env []string) []string {
-	seen := make(map[string]int, len(env))
-	for i, e := range env {
-		k := e
-		if idx := strings.IndexByte(e, '='); idx >= 0 {
-			k = e[:idx]
-		}
-		seen[k] = i
-	}
-	out := make([]string, 0, len(seen))
-	for _, e := range env {
-		k := e
-		if idx := strings.IndexByte(e, '='); idx >= 0 {
-			k = e[:idx]
-		}
-		if seen[k] == indexOf(env, e) {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-func indexOf(env []string, e string) int {
-	for i := len(env) - 1; i >= 0; i-- {
-		if env[i] == e {
-			return i
-		}
-	}
-	return -1
+	return env
 }

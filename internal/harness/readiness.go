@@ -10,9 +10,10 @@ import (
 
 // Readiness holds the ports parsed from the SDK harness stdout.
 type Readiness struct {
-	X509Port int
-	JWTPort  int
-	Ready    bool
+	X509Port    int
+	JWTPort     int
+	ControlPort int // optional; 0 when the harness does not advertise one
+	Ready       bool
 }
 
 // IsComplete reports whether all three required values have been observed.
@@ -59,6 +60,12 @@ func parseLine(line string, r *Readiness) error {
 			return fmt.Errorf("parse SPIFFE_JWT_PORT: %w", err)
 		}
 		r.JWTPort = p
+	case strings.HasPrefix(line, "SPIFFE_CONTROL_PORT="):
+		p, err := strconv.Atoi(strings.TrimPrefix(line, "SPIFFE_CONTROL_PORT="))
+		if err != nil {
+			return fmt.Errorf("parse SPIFFE_CONTROL_PORT: %w", err)
+		}
+		r.ControlPort = p
 	}
 	return nil
 }

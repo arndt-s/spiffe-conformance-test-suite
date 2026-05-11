@@ -101,6 +101,14 @@ func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) result.Result {
 
 	runErr := tc.Run(ctx, env)
 	if runErr != nil {
+		if msg, ok := IsSkip(runErr); ok {
+			return result.Result{
+				Name:        tc.Name,
+				Description: tc.Description,
+				Status:      result.StatusSkip,
+				Message:     msg,
+			}
+		}
 		return result.Result{
 			Name:        tc.Name,
 			Description: tc.Description,

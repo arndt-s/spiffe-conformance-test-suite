@@ -9,10 +9,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"google.golang.org/grpc/codes"
 
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/ca"
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/harness"
+	"github.com/arndt-s/spiffe-conformance-test-suite/internal/harnessctl"
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/prober"
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/workloadapi"
 )
@@ -24,7 +26,14 @@ type TestEnv struct {
 	server    *workloadapi.Server
 	process   *harness.RunningProcess
 	probeCert tls.Certificate // valid client cert for ProbeX509 calls
-	trustPool *x509.CertPool // trust pool built from test CA
+	trustPool *x509.CertPool  // trust pool built from test CA
+	control   *harnessctl.Client
+
+	// cmd / args are stashed so capability-gated helpers (e.g.
+	// SpawnHarnessWithOverride) can re-launch the SDK harness with
+	// different env vars or timeouts.
+	cmd  string
+	args []string
 }
 
 // newTestEnv creates and wires up a complete test environment.
@@ -93,7 +102,7 @@ func newTestEnv(ctx context.Context, cmd string, args []string, stdout, stderr i
 
 	process, err := harness.Start(ctx, harness.Config{
 		Cmd:        cmd,
-		Args:       splitArgs(args),
+		Args:       args,
 		SocketPath: socketPath,
 		StdOut:     stdout,
 		StdErr:     stderr,
@@ -104,12 +113,22 @@ func newTestEnv(ctx context.Context, cmd string, args []string, stdout, stderr i
 		return nil, nil, fmt.Errorf("start harness: %w", err)
 	}
 
+	control := harnessctl.New(process.ControlPort())
+	if err := control.LoadCapabilities(); err != nil {
+		// A control-port failure must not break the test environment;
+		// tests that need a capability will Skip via RequireCapability.
+		_ = err
+	}
+
 	env := &TestEnv{
 		ca:        authority,
 		server:    server,
 		process:   process,
 		probeCert: probeSVID.TLSCertificate(),
 		trustPool: authority.CACertPool(),
+		control:   control,
+		cmd:       cmd,
+		args:      args,
 	}
 
 	fullCleanup := func() {
@@ -181,6 +200,31 @@ func (e *TestEnv) SetX509State(state *workloadapi.X509State) {
 	e.server.SetX509State(state)
 }
 
+// SetFailMode forces the named RPC method to return the given gRPC code on
+// every subsequent call. Pass codes.OK to clear. Method names are the short
+// gRPC names: "FetchX509SVID", "FetchX509Bundles", "FetchJWTSVID",
+// "FetchJWTBundles".
+func (e *TestEnv) SetFailMode(method string, code codes.Code) {
+	e.server.SetFailMode(method, code)
+}
+
+// CloseStreamOnce signals the named streaming RPC to send its current state
+// once and then return cleanly, simulating a server-initiated stream close.
+func (e *TestEnv) CloseStreamOnce(method string) {
+	e.server.CloseStreamOnce(method)
+}
+
+// Calls returns a snapshot of every recorded RPC invocation against the
+// mock workload API server.
+func (e *TestEnv) Calls() []workloadapi.MethodCall {
+	return e.server.Calls()
+}
+
+// ResetCalls clears the recorded RPC invocation log.
+func (e *TestEnv) ResetCalls() {
+	e.server.ResetCalls()
+}
+
 // SetJWTState is a raw escape hatch for setting JWT server state directly.
 func (e *TestEnv) SetJWTState(state *workloadapi.JWTState) {
 	e.server.SetJWTState(state)
@@ -210,9 +254,23 @@ func (e *TestEnv) X509Port() int { return e.process.X509Port() }
 // JWTPort returns the port on which the SDK exposes JWT SVIDs.
 func (e *TestEnv) JWTPort() int { return e.process.JWTPort() }
 
-func splitArgs(args []string) []string {
-	if len(args) == 1 && strings.Contains(args[0], " ") {
-		return strings.Fields(args[0])
+// Control returns the typed client for the harness's control port.
+// Always non-nil; methods report ErrControlPortUnavailable when the
+// harness has not advertised a control port.
+func (e *TestEnv) Control() *harnessctl.Client { return e.control }
+
+// Capabilities returns the capability names advertised by the harness.
+func (e *TestEnv) Capabilities() []string { return e.control.Capabilities() }
+
+// RequireCapability returns nil when the harness advertises the named
+// capability, or a Skip error otherwise. Idiomatic use:
+//
+//	if err := env.RequireCapability(harnessctl.CapMTLSVerify); err != nil {
+//	    return err
+//	}
+func (e *TestEnv) RequireCapability(name string) error {
+	if e.control.HasCapability(name) {
+		return nil
 	}
-	return args
+	return Skip("harness does not advertise capability %q", name)
 }

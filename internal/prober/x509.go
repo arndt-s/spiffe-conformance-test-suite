@@ -4,38 +4,27 @@ package prober
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"time"
 )
 
-// ProbeX509InsecureForTesting dials the SDK's X.509 port without client auth
-// and without server certificate verification. Intended for skeleton/smoke tests
-// only; production test cases should use ProbeX509 with a proper trust bundle.
-func ProbeX509InsecureForTesting(port int) (*X509ProbeResult, error) {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	conn, err := tls.DialWithDialer(
-		&net.Dialer{Timeout: 5 * time.Second},
-		"tcp",
-		addr,
-		&tls.Config{InsecureSkipVerify: true}, //nolint:gosec // intentional for test skeleton
-	)
-	if err != nil {
-		return nil, fmt.Errorf("TLS dial %s: %w", addr, err)
+// isExpectedReadError reports whether err is a "connection healthy
+// but no data" outcome from the brief post-handshake Read above. We
+// treat io.EOF, the timeout from our own deadline, and Go's
+// "use of closed network connection" as expected; anything else
+// (including TLS alerts) is bubbled up so callers see the rejection.
+func isExpectedReadError(err error) bool {
+	if err == io.EOF {
+		return true
 	}
-	defer conn.Close()
-
-	state := conn.ConnectionState()
-	result := &X509ProbeResult{
-		PeerCerts: state.PeerCertificates,
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
 	}
-	if len(state.PeerCertificates) > 0 {
-		leaf := state.PeerCertificates[0]
-		for _, u := range leaf.URIs {
-			result.SpiffeIDs = append(result.SpiffeIDs, u.String())
-		}
-	}
-	return result, nil
+	return false
 }
 
 // X509ProbeResult holds the result of probing the SDK's X.509 port.
@@ -84,6 +73,21 @@ func ProbeX509(port int, clientCert tls.Certificate, trustBundle *x509.CertPool)
 		return nil, fmt.Errorf("TLS dial %s: %w", addr, err)
 	}
 	defer conn.Close()
+
+	// Under TLS 1.3 the client may finish the handshake locally before the
+	// server's alert (e.g. after a server-side VerifyPeerCertificate
+	// rejection) arrives. Force a short Read so any alert surfaces here
+	// rather than being silently dropped by Close().
+	_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err != nil {
+		// io.EOF / "connection closed" / read-deadline exceeded are all
+		// expected for healthy connections; only treat real I/O errors
+		// (TLS alerts) as a probe failure.
+		if !isExpectedReadError(err) {
+			return nil, fmt.Errorf("TLS post-handshake read %s: %w", addr, err)
+		}
+	}
 
 	state := conn.ConnectionState()
 	result := &X509ProbeResult{

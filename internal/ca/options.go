@@ -15,8 +15,10 @@ type x509SVIDConfig struct {
 	notBefore   time.Time
 	isCA        bool
 	keyUsage    *x509.KeyUsage
+	extKeyUsage *[]x509.ExtKeyUsage
 	extraURIs   []*url.URL
 	uriOverride []*url.URL
+	omitURIs    bool
 }
 
 func defaultX509Config() x509SVIDConfig {
@@ -48,8 +50,25 @@ func WithX509IsCA() X509SVIDOption {
 }
 
 // WithX509KeyUsage overrides the default key usage flags on the leaf cert.
+// Pass 0 to omit the Key Usage extension entirely.
 func WithX509KeyUsage(ku x509.KeyUsage) X509SVIDOption {
 	return func(c *x509SVIDConfig) { c.keyUsage = &ku }
+}
+
+// WithX509ExtKeyUsage overrides the Extended Key Usage flags on the leaf
+// cert. Pass no arguments to emit an empty (but present) EKU extension.
+func WithX509ExtKeyUsage(eku ...x509.ExtKeyUsage) X509SVIDOption {
+	return func(c *x509SVIDConfig) {
+		copied := append([]x509.ExtKeyUsage(nil), eku...)
+		c.extKeyUsage = &copied
+	}
+}
+
+// WithX509OmitURIs issues a leaf with no URI SANs at all. The cert is
+// otherwise unchanged; the resulting cert violates the SVID requirement
+// of containing exactly one SPIFFE URI SAN.
+func WithX509OmitURIs() X509SVIDOption {
+	return func(c *x509SVIDConfig) { c.omitURIs = true }
 }
 
 // WithX509ExtraURIs appends additional URI SANs alongside the SPIFFE ID.
@@ -66,11 +85,13 @@ func WithX509URIOverride(uris ...*url.URL) X509SVIDOption {
 type JWTSVIDOption func(*jwtSVIDConfig)
 
 type jwtSVIDConfig struct {
-	ttl          time.Duration
-	audience     []string
-	extra        map[string]interface{}
-	deleteClaims []string
-	extraHeaders map[string]interface{}
+	ttl           time.Duration
+	audience      []string
+	extra         map[string]interface{}
+	deleteClaims  []string
+	extraHeaders  map[string]interface{}
+	deleteHeaders []string
+	signingKID    string
 }
 
 func defaultJWTConfig() jwtSVIDConfig {
@@ -115,4 +136,47 @@ func WithJWTHeader(key string, value interface{}) JWTSVIDOption {
 		}
 		c.extraHeaders[key] = value
 	}
+}
+
+// WithJWTDeleteHeader removes a header field after the default ones have
+// been set. Useful for testing optional fields like "typ".
+func WithJWTDeleteHeader(key string) JWTSVIDOption {
+	return func(c *jwtSVIDConfig) { c.deleteHeaders = append(c.deleteHeaders, key) }
+}
+
+// WithJWTSigningKey selects which JWT signing key (by kid) is used to sign
+// the issued token. If unset, IssueJWT picks the first registered "sig"
+// (or untyped) key.
+func WithJWTSigningKey(kid string) JWTSVIDOption {
+	return func(c *jwtSVIDConfig) { c.signingKID = kid }
+}
+
+// JWTKeyOption configures a JWT signing key registered via (*CA).AddJWTKey.
+type JWTKeyOption func(*jwtKeyConfig)
+
+type jwtKeyConfig struct {
+	alg string
+	use string
+	kid string
+}
+
+func defaultJWTKeyConfig() jwtKeyConfig {
+	return jwtKeyConfig{alg: "ES256", use: "sig"}
+}
+
+// WithJWTKeyAlg sets the JWS algorithm for the registered key. Supported
+// values are RS256/RS384/RS512, ES256/ES384/ES512, PS256/PS384/PS512.
+func WithJWTKeyAlg(alg string) JWTKeyOption {
+	return func(c *jwtKeyConfig) { c.alg = alg }
+}
+
+// WithJWTKeyUse sets the JWK "use" parameter ("sig", "enc", or empty).
+func WithJWTKeyUse(use string) JWTKeyOption {
+	return func(c *jwtKeyConfig) { c.use = use }
+}
+
+// WithJWTKeyID sets an explicit kid for the registered key. If unset,
+// AddJWTKey assigns one of the form "key-<n>".
+func WithJWTKeyID(kid string) JWTKeyOption {
+	return func(c *jwtKeyConfig) { c.kid = kid }
 }
