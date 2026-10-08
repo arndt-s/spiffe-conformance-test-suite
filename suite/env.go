@@ -122,7 +122,11 @@ func newTestEnv(ctx context.Context, cfg RunnerConfig, opts EnvOptions) (*TestEn
 	e.probeCert = probeSVID.TLSCertificate()
 
 	if !opts.ManualStart {
-		if err := e.StartHarness(ctx, harness.DefaultReadinessTimeout); err != nil {
+		timeout := cfg.ReadyTimeout
+		if timeout == 0 {
+			timeout = harness.DefaultReadinessTimeout
+		}
+		if err := e.StartHarness(ctx, timeout); err != nil {
 			e.close()
 			return nil, err
 		}

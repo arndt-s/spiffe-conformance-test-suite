@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/result"
 	"github.com/arndt-s/spiffe-conformance-test-suite/suite"
@@ -20,6 +21,7 @@ type runFlags struct {
 	output      string
 	resultsFile string
 	parallel    int
+	readyTO     time.Duration
 	verbose     bool
 }
 
@@ -58,6 +60,7 @@ executed (ERROR); and 1 for invalid usage or internal errors.`,
 	cmd.Flags().StringVar(&flags.args, "args", "", "Comma-separated arguments to pass to the harness")
 	cmd.Flags().StringVar(&flags.tests, "tests", "", "Comma-separated test IDs or groups to run (e.g. XV-8,JV,EP-5); empty runs all")
 	cmd.Flags().IntVar(&flags.parallel, "parallel", 1, "Number of test cases to run concurrently")
+	cmd.Flags().DurationVar(&flags.readyTO, "ready-timeout", 10*time.Second, "How long to wait for the harness to print READY")
 	cmd.Flags().StringVar(&flags.output, "output", "text", "Output format for stdout: text or json")
 	cmd.Flags().StringVar(&flags.resultsFile, "results-file", "", "Also write the results as JSON to this file")
 	cmd.Flags().BoolVarP(&flags.verbose, "verbose", "v", false, "Enable verbose logging")
@@ -80,7 +83,7 @@ func runSuite(ctx context.Context, cmd *cobra.Command, flags runFlags) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Running suite with\ncmd:\t%s\nargs:\t%s\n", flags.cmd, flags.args)
 	}
 
-	cfg := suite.RunnerConfig{Cmd: flags.cmd, Args: args, Parallel: flags.parallel, StOut: stOut, StErr: stErr}
+	cfg := suite.RunnerConfig{Cmd: flags.cmd, Args: args, Parallel: flags.parallel, ReadyTimeout: flags.readyTO, StOut: stOut, StErr: stErr}
 
 	cases, err := suite.Select(include)
 	if err != nil {

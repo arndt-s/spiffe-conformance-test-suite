@@ -48,7 +48,7 @@ function applyX509Response(resp: X509SVIDResponse) {
   try {
     // setSecureContext applies to new connections (rotation without restart).
     // No CA/bundle is configured: peers are not authenticated (see below).
-    x509Server.setSecureContext({cert: toPEM(svid.x509Svid).join(''), key: derKeyToPEM(svid.x509SvidKey)})
+    x509Server.setSecureContext({cert: toPEM(svid.x509Svid).join('\n'), key: derKeyToPEM(svid.x509SvidKey)})
   } catch (err) {
     log('cannot use X509SVIDResponse; X.509 port has no identity:', errMessage(err))
     serving = false

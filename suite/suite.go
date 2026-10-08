@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/result"
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/workloadapi"
@@ -150,6 +151,9 @@ type RunnerConfig struct {
 	Args []string
 	// Parallel is the number of test cases run concurrently (default 1).
 	Parallel int
+	// ReadyTimeout is how long to wait for the harness's READY (default
+	// harness.DefaultReadinessTimeout).
+	ReadyTimeout time.Duration
 
 	StOut io.Writer
 	StErr io.Writer
