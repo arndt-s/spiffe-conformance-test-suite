@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"strings"
 	"time"
 
 	jwtlib "github.com/golang-jwt/jwt/v5"
@@ -81,418 +82,198 @@ func init() {
 	})
 }
 
-func runJ1(ctx context.Context, env *suite.TestEnv) error {
-	// Issue a JWT SVID for the audience the SDK expects.
-	// The demo uses "test" as the default audience (see demo/main.go).
-	spiffeID := "spiffe://test.example.org/workload"
+const workloadID = "spiffe://test.example.org/workload"
 
-	jwtMaterial, err := env.IssueJWT(spiffeID, ca.WithJWTAudience(ValidAudience))
+// expectAccepted validates token and fails unless the SDK accepted it as
+// wantID.
+func expectAccepted(env *suite.TestEnv, token, wantID string) error {
+	v, err := env.ValidateJWT(token, ValidAudience)
 	if err != nil {
-		return suite.ExecErrorf("issue JWT SVID: %w", err)
+		return err
 	}
-
-	// Serve the JWKS bundle so the SDK can validate the token.
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
+	if !v.Accepted {
+		return fmt.Errorf("SDK rejected a valid JWT-SVID: %s", v.Message)
 	}
-
-	// Probe the SDK's JWT port with the issued token
-	result, err := env.ProbeJWT(jwtMaterial.Token)
-	if err != nil {
-		return fmt.Errorf("probe JWT endpoint: %w", err)
+	if v.SPIFFEID != wantID {
+		return fmt.Errorf("SDK returned SPIFFE ID %q, want %q", v.SPIFFEID, wantID)
 	}
-
-	// Verify the SDK validated the token successfully
-	if result.Status != "valid" {
-		return fmt.Errorf("expected status 'valid', got %q", result.Status)
-	}
-
-	// Verify the SDK returned the correct SPIFFE ID
-	if result.SPIFFEID != spiffeID {
-		return fmt.Errorf("expected SPIFFE ID %q, got %q", spiffeID, result.SPIFFEID)
-	}
-
 	return nil
 }
 
+// expectRejected validates token and fails if the SDK accepted it.
+func expectRejected(env *suite.TestEnv, token, what string) error {
+	v, err := env.ValidateJWT(token, ValidAudience)
+	if err != nil {
+		return err
+	}
+	if v.Accepted {
+		return fmt.Errorf("SDK accepted %s (returned SPIFFE ID %q)", what, v.SPIFFEID)
+	}
+	return nil
+}
+
+// serveBundleWithControl serves the test CA's JWT bundle and checks that the
+// SDK accepts a valid token, so that a later rejection means something.
+func serveBundleWithControl(env *suite.TestEnv) error {
+	if err := env.ServeJWTBundle(); err != nil {
+		return suite.ExecErrorf("serve JWT bundle: %w", err)
+	}
+	valid, err := env.IssueJWT(workloadID, ca.WithJWTAudience(ValidAudience))
+	if err != nil {
+		return suite.ExecErrorf("issue control JWT: %w", err)
+	}
+	if err := expectAccepted(env, valid.Token, workloadID); err != nil {
+		return fmt.Errorf("positive control: %w", err)
+	}
+	return nil
+}
+
+// rejectIssued serves the bundle, runs the positive control, issues a token
+// with opts from the test CA and expects the SDK to reject it.
+func rejectIssued(env *suite.TestEnv, spiffeID, what string, opts ...ca.JWTSVIDOption) error {
+	if err := serveBundleWithControl(env); err != nil {
+		return err
+	}
+	tok, err := env.IssueJWT(spiffeID, append([]ca.JWTSVIDOption{ca.WithJWTAudience(ValidAudience)}, opts...)...)
+	if err != nil {
+		return suite.ExecErrorf("issue JWT: %w", err)
+	}
+	return expectRejected(env, tok.Token, what)
+}
+
+func runJ1(ctx context.Context, env *suite.TestEnv) error {
+	if err := env.ServeJWTBundle(); err != nil {
+		return suite.ExecErrorf("serve JWT bundle: %w", err)
+	}
+	tok, err := env.IssueJWT(workloadID, ca.WithJWTAudience(ValidAudience))
+	if err != nil {
+		return suite.ExecErrorf("issue JWT SVID: %w", err)
+	}
+	return expectAccepted(env, tok.Token, workloadID)
+}
+
 func runJ2(ctx context.Context, env *suite.TestEnv) error {
-	// Create a second CA with an independent JWT signing key.
+	if err := serveBundleWithControl(env); err != nil {
+		return err
+	}
+	// A second CA for the same trust domain has its own key with its own kid,
+	// which is not in the bundle being served.
 	foreignCA, err := ca.New("spiffe://test.example.org")
 	if err != nil {
 		return suite.ExecErrorf("create foreign CA: %w", err)
 	}
-
-	// Issue a JWT signed by the foreign key.
-	foreignMaterial, err := foreignCA.IssueJWT(
-		"spiffe://test.example.org/workload",
-		ca.WithJWTAudience(ValidAudience),
-	)
+	tok, err := foreignCA.IssueJWT(workloadID, ca.WithJWTAudience(ValidAudience))
 	if err != nil {
 		return suite.ExecErrorf("issue foreign JWT: %w", err)
 	}
-
-	// Serve the foreign token, but ServeJWT populates the bundle from env.ca, so
-	// the token's key ID is not in the bundle.
-	if err := env.ServeJWT(foreignMaterial); err != nil {
-		return suite.ExecErrorf("serve JWT state: %w", err)
-	}
-
-	result, err := env.ProbeJWT(foreignMaterial.Token)
-	if err != nil {
-		return fmt.Errorf("probe: %w", err)
-	}
-
-	if result.HTTPStatus == 200 {
-		return fmt.Errorf("expected non HTTP 200 from SDK, got %d", result.HTTPStatus)
-	}
-	if result.Status == "valid" {
-		return fmt.Errorf("expected SDK to reject foreign-key JWT, but got status %q", result.Status)
-	}
-	return nil
+	return expectRejected(env, tok.Token, "a JWT signed by a key not in the bundle")
 }
 
 func runJ3(ctx context.Context, env *suite.TestEnv) error {
-	// Issue a JWT with an audience claim that the SDK does not expect.
-	spiffeID := "spiffe://test.example.org/workload"
-	wrongAudience := "wrong-audience"
-
-	jwtMaterial, err := env.IssueJWT(spiffeID, ca.WithJWTAudience(wrongAudience))
-	if err != nil {
-		return suite.ExecErrorf("issue JWT SVID: %w", err)
-	}
-
-	// Serve the JWKS bundle so the SDK can validate the signature.
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
-	}
-
-	result, err := env.ProbeJWT(jwtMaterial.Token)
-	if err != nil {
-		return fmt.Errorf("probe JWT endpoint: %w", err)
-	}
-
-	// The SDK should reject the JWT due to audience mismatch.
-	if result.HTTPStatus == 200 {
-		return fmt.Errorf("expected non HTTP 200 from SDK, got %d", result.HTTPStatus)
-	}
-	if result.Status == "valid" {
-		return fmt.Errorf("expected SDK to reject JWT with wrong audience, but got status %q", result.Status)
-	}
-
-	return nil
+	return rejectIssued(env, workloadID, "a JWT for a different audience", ca.WithJWTAudience("wrong-audience"))
 }
 
 func runJ4(ctx context.Context, env *suite.TestEnv) error {
-	// Serve the JWKS bundle first.
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
+	if err := serveBundleWithControl(env); err != nil {
+		return err
 	}
-
-	// Send a malformed JWT (not enough parts).
-	malformedToken := "not_a.valid.jwt"
-
-	result, err := env.ProbeJWT(malformedToken)
-	if err != nil {
-		return fmt.Errorf("probe JWT endpoint: %w", err)
-	}
-
-	// The SDK should reject the malformed JWT.
-	if result.HTTPStatus == 200 {
-		return fmt.Errorf("expected non HTTP 200 from SDK, got %d", result.HTTPStatus)
-	}
-	if result.Status == "valid" {
-		return fmt.Errorf("expected SDK to reject malformed JWT, but got status %q", result.Status)
-	}
-
-	return nil
+	return expectRejected(env, "not_a.valid.jwt", "a malformed JWT")
 }
 
 func runJ5(ctx context.Context, env *suite.TestEnv) error {
-	// Issue a valid JWT.
-	spiffeID := "spiffe://test.example.org/workload"
-
-	jwtMaterial, err := env.IssueJWT(spiffeID, ca.WithJWTAudience(ValidAudience))
+	if err := serveBundleWithControl(env); err != nil {
+		return err
+	}
+	tok, err := env.IssueJWT(workloadID, ca.WithJWTAudience(ValidAudience))
 	if err != nil {
 		return suite.ExecErrorf("issue JWT SVID: %w", err)
 	}
+	return expectRejected(env, flipSignatureChar(tok.Token), "a JWT with a tampered signature")
+}
 
-	// Serve the JWKS bundle.
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
+// flipSignatureChar changes one base64url character in the middle of the
+// signature, so the token stays well-formed but the signature is wrong.
+func flipSignatureChar(token string) string {
+	i := strings.LastIndex(token, ".") + (len(token)-strings.LastIndex(token, "."))/2
+	b := []byte(token)
+	if b[i] == 'A' {
+		b[i] = 'B'
+	} else {
+		b[i] = 'A'
 	}
-
-	// Corrupt the signature by appending garbage to the token.
-	corruptToken := jwtMaterial.Token + "corrupted"
-
-	result, err := env.ProbeJWT(corruptToken)
-	if err != nil {
-		return fmt.Errorf("probe JWT endpoint: %w", err)
-	}
-
-	// The SDK should reject the JWT due to invalid signature.
-	if result.HTTPStatus == 200 {
-		return fmt.Errorf("expected non HTTP 200 from SDK, got %d", result.HTTPStatus)
-	}
-	if result.Status == "valid" {
-		return fmt.Errorf("expected SDK to reject JWT with invalid signature, but got status %q", result.Status)
-	}
-
-	return nil
+	return string(b)
 }
 
 func runJ6(ctx context.Context, env *suite.TestEnv) error {
-	// Issue a JWT with a very short TTL and then wait for it to expire.
-	// Use a negative TTL to issue an already-expired token.
-	spiffeID := "spiffe://test.example.org/workload"
-
-	jwtMaterial, err := env.IssueJWT(
-		spiffeID,
-		ca.WithJWTAudience(ValidAudience),
-		ca.WithJWTTTL(-1*time.Hour), // Already expired
-	)
-	if err != nil {
-		return suite.ExecErrorf("issue JWT SVID: %w", err)
-	}
-
-	// Serve the JWKS bundle.
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
-	}
-
-	result, err := env.ProbeJWT(jwtMaterial.Token)
-	if err != nil {
-		return fmt.Errorf("probe JWT endpoint: %w", err)
-	}
-
-	// The SDK should reject the expired JWT.
-	if result.HTTPStatus == 200 {
-		return fmt.Errorf("expected non HTTP 200 from SDK, got %d", result.HTTPStatus)
-	}
-	if result.Status == "valid" {
-		return fmt.Errorf("expected SDK to reject expired JWT, but got status %q", result.Status)
-	}
-
-	return nil
+	return rejectIssued(env, workloadID, "an expired JWT", ca.WithJWTTTL(-1*time.Hour))
 }
 
 func runJ7(ctx context.Context, env *suite.TestEnv) error {
-	// Issue a JWT with a non-SPIFFE ID in the 'sub' claim.
-	// We use WithJWTClaim to override the subject with a non-SPIFFE ID.
-	nonSpiffeID := "not-a-spiffe-id"
-
-	// First issue a normal JWT to get the structure, but we need to use
-	// a raw JWT construction via WithJWTClaim to override 'sub'.
-	jwtMaterial, err := env.IssueJWT(
-		"spiffe://test.example.org/workload",
-		ca.WithJWTAudience(ValidAudience),
-		ca.WithJWTClaim("sub", nonSpiffeID), // Override 'sub' with non-SPIFFE value
-	)
-	if err != nil {
-		return suite.ExecErrorf("issue JWT SVID: %w", err)
-	}
-
-	// Serve the JWKS bundle.
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
-	}
-
-	result, err := env.ProbeJWT(jwtMaterial.Token)
-	if err != nil {
-		return fmt.Errorf("probe JWT endpoint: %w", err)
-	}
-
-	// The SDK should reject the JWT due to non-SPIFFE 'sub' claim.
-	if result.HTTPStatus == 200 {
-		return fmt.Errorf("expected non HTTP 200 from SDK, got %d", result.HTTPStatus)
-	}
-	if result.Status == "valid" {
-		return fmt.Errorf("expected SDK to reject JWT with non-SPIFFE 'sub', but got status %q", result.Status)
-	}
-
-	return nil
+	return rejectIssued(env, workloadID, "a JWT whose sub is not a SPIFFE ID", ca.WithJWTClaim("sub", "not-a-spiffe-id"))
 }
 
 func runJ8(ctx context.Context, env *suite.TestEnv) error {
-	// Issue a JWT with a SPIFFE ID from a different trust domain.
-	wrongTrustDomainID := "spiffe://other.example.org/workload"
-
-	jwtMaterial, err := env.IssueJWT(
-		wrongTrustDomainID,
-		ca.WithJWTAudience(ValidAudience),
-	)
-	if err != nil {
-		return suite.ExecErrorf("issue JWT SVID: %w", err)
-	}
-
-	// Serve the JWKS bundle for the correct trust domain.
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
-	}
-
-	result, err := env.ProbeJWT(jwtMaterial.Token)
-	if err != nil {
-		return fmt.Errorf("probe JWT endpoint: %w", err)
-	}
-
-	// The SDK should reject the JWT due to trust domain mismatch.
-	if result.HTTPStatus == 200 {
-		return fmt.Errorf("expected non HTTP 200 from SDK, got %d", result.HTTPStatus)
-	}
-	if result.Status == "valid" {
-		return fmt.Errorf("expected SDK to reject JWT with wrong trust domain, but got status %q", result.Status)
-	}
-
-	return nil
+	return rejectIssued(env, "spiffe://other.example.org/workload", "a JWT from a trust domain without a bundle")
 }
 
 func runJ9(ctx context.Context, env *suite.TestEnv) error {
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
+	if err := serveBundleWithControl(env); err != nil {
+		return err
 	}
 
-	spiffeID := "spiffe://test.example.org/workload"
 	now := time.Now()
-	baseClaims := jwtlib.MapClaims{
-		"sub": spiffeID,
+	claims := jwtlib.MapClaims{
+		"sub": workloadID,
 		"aud": jwtlib.ClaimStrings{ValidAudience},
 		"iat": now.Unix(),
 		"exp": now.Add(time.Hour).Unix(),
 	}
 
-	// Sub-test 1: alg=none
-	noneToken := jwtlib.NewWithClaims(jwtlib.SigningMethodNone, baseClaims)
-	noneStr, err := noneToken.SignedString(jwtlib.UnsafeAllowNoneSignatureType)
+	none, err := jwtlib.NewWithClaims(jwtlib.SigningMethodNone, claims).SignedString(jwtlib.UnsafeAllowNoneSignatureType)
 	if err != nil {
 		return suite.ExecErrorf("sign none token: %w", err)
 	}
-	r1, err := env.ProbeJWT(noneStr)
-	if err != nil {
-		return fmt.Errorf("probe alg=none: %w", err)
-	}
-	if r1.Status == "valid" {
-		return fmt.Errorf("J9: SDK accepted alg=none token")
+	if err := expectRejected(env, none, "an alg=none JWT"); err != nil {
+		return err
 	}
 
-	// Sub-test 2: alg=HS256 with a random symmetric key
 	hmacKey := make([]byte, 32)
 	if _, err := rand.Read(hmacKey); err != nil {
 		return suite.ExecErrorf("generate HMAC key: %w", err)
 	}
-	hmacToken := jwtlib.NewWithClaims(jwtlib.SigningMethodHS256, baseClaims)
-	hmacStr, err := hmacToken.SignedString(hmacKey)
+	hs, err := jwtlib.NewWithClaims(jwtlib.SigningMethodHS256, claims).SignedString(hmacKey)
 	if err != nil {
 		return suite.ExecErrorf("sign HS256 token: %w", err)
 	}
-	r2, err := env.ProbeJWT(hmacStr)
-	if err != nil {
-		return fmt.Errorf("probe alg=HS256: %w", err)
-	}
-	if r2.Status == "valid" {
-		return fmt.Errorf("J9: SDK accepted alg=HS256 token signed with unknown symmetric key")
-	}
-
-	return nil
+	return expectRejected(env, hs, "an alg=HS256 JWT")
 }
 
 func runJ10(ctx context.Context, env *suite.TestEnv) error {
-	spiffeID := "spiffe://test.example.org/workload"
-
-	jwtMaterial, err := env.IssueJWT(spiffeID,
-		ca.WithJWTAudience(ValidAudience),
-		ca.WithJWTDeleteClaim("exp"),
-	)
-	if err != nil {
-		return suite.ExecErrorf("issue JWT without exp: %w", err)
-	}
-
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
-	}
-
-	result, err := env.ProbeJWT(jwtMaterial.Token)
-	if err != nil {
-		return fmt.Errorf("probe JWT endpoint: %w", err)
-	}
-
-	if result.Status == "valid" {
-		return fmt.Errorf("J10: SDK accepted JWT without 'exp' claim")
-	}
-	return nil
+	return rejectIssued(env, workloadID, "a JWT without exp", ca.WithJWTDeleteClaim("exp"))
 }
 
 func runJ11(ctx context.Context, env *suite.TestEnv) error {
-	spiffeID := "spiffe://test.example.org/workload"
-
-	jwtMaterial, err := env.IssueJWT(spiffeID,
-		ca.WithJWTAudience(ValidAudience),
-		ca.WithJWTDeleteClaim("aud"),
-	)
-	if err != nil {
-		return suite.ExecErrorf("issue JWT without aud: %w", err)
-	}
-
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
-	}
-
-	result, err := env.ProbeJWT(jwtMaterial.Token)
-	if err != nil {
-		return fmt.Errorf("probe JWT endpoint: %w", err)
-	}
-
-	if result.Status == "valid" {
-		return fmt.Errorf("J11: SDK accepted JWT without 'aud' claim")
-	}
-	return nil
+	return rejectIssued(env, workloadID, "a JWT without aud", ca.WithJWTDeleteClaim("aud"))
 }
 
 func runJ12(ctx context.Context, env *suite.TestEnv) error {
-	spiffeID := "spiffe://test.example.org/workload"
-
-	jwtMaterial, err := env.IssueJWT(spiffeID,
-		ca.WithJWTAudience(ValidAudience),
-		ca.WithJWTHeader("typ", "INVALID"),
-	)
-	if err != nil {
-		return suite.ExecErrorf("issue JWT with invalid typ: %w", err)
-	}
-
-	if err := env.ServeJWTBundle(); err != nil {
-		return suite.ExecErrorf("serve JWT bundle: %w", err)
-	}
-
-	result, err := env.ProbeJWT(jwtMaterial.Token)
-	if err != nil {
-		return fmt.Errorf("probe JWT endpoint: %w", err)
-	}
-
-	if result.Status == "valid" {
-		return fmt.Errorf("J12: SDK accepted JWT with invalid 'typ' header")
-	}
-	return nil
+	return rejectIssued(env, workloadID, "a JWT with typ=INVALID", ca.WithJWTHeader("typ", "INVALID"))
 }
 
 func runJ13(ctx context.Context, env *suite.TestEnv) error {
-	spiffeID := "spiffe://test.example.org/workload"
-
-	// Step 1: issue JWT1 with the original CA (key1) and verify it validates.
-	jwt1, err := env.IssueJWT(spiffeID, ca.WithJWTAudience(ValidAudience))
+	// Step 1: a token signed with the original key validates.
+	jwt1, err := env.IssueJWT(workloadID, ca.WithJWTAudience(ValidAudience))
 	if err != nil {
 		return suite.ExecErrorf("issue JWT1: %w", err)
 	}
 	if err := env.ServeJWTBundle(); err != nil {
 		return suite.ExecErrorf("serve initial JWKS: %w", err)
 	}
-
-	r1, err := env.ProbeJWT(jwt1.Token)
-	if err != nil {
-		return fmt.Errorf("initial probe: %w", err)
-	}
-	if r1.Status != "valid" {
-		return fmt.Errorf("J13: JWT1 should be valid before rotation, got status %q", r1.Status)
+	if err := expectAccepted(env, jwt1.Token, workloadID); err != nil {
+		return fmt.Errorf("before rotation: %w", err)
 	}
 
-	// Step 2: rotate to a new CA (key2).
+	// Step 2: rotate the bundle to a new key only.
 	ca2, err := ca.New("spiffe://test.example.org")
 	if err != nil {
 		return suite.ExecErrorf("create ca2: %w", err)
@@ -505,20 +286,22 @@ func runJ13(ctx context.Context, env *suite.TestEnv) error {
 		Bundles: map[string][]byte{ca2.TrustDomain(): jwks2},
 	})
 
-	// Step 3: issue JWT2 with ca2 and poll until SDK accepts it (bundle rotated).
-	jwt2, err := ca2.IssueJWT(spiffeID, ca.WithJWTAudience(ValidAudience))
+	// Step 3: wait until the SDK accepts a token signed with the new key.
+	jwt2, err := ca2.IssueJWT(workloadID, ca.WithJWTAudience(ValidAudience))
 	if err != nil {
 		return suite.ExecErrorf("issue JWT2: %w", err)
 	}
-
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		r2, err := env.ProbeJWT(jwt2.Token)
-		if err == nil && r2.Status == "valid" {
+		v, err := env.ValidateJWT(jwt2.Token, ValidAudience)
+		if err != nil {
+			return err
+		}
+		if v.Accepted {
 			break
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("J13: SDK did not pick up rotated JWKS within 5s")
+			return fmt.Errorf("SDK did not pick up the rotated JWT bundle within 5s")
 		}
 		select {
 		case <-ctx.Done():
@@ -527,14 +310,6 @@ func runJ13(ctx context.Context, env *suite.TestEnv) error {
 		}
 	}
 
-	// Step 4: JWT1 (signed by the old key) must now be rejected.
-	r3, err := env.ProbeJWT(jwt1.Token)
-	if err != nil {
-		return fmt.Errorf("probe JWT1 after rotation: %w", err)
-	}
-	if r3.Status == "valid" {
-		return fmt.Errorf("J13: SDK accepted JWT1 (old key) after JWKS rotation")
-	}
-
-	return nil
+	// Step 4: the old key is gone, so JWT1 must now be rejected.
+	return expectRejected(env, jwt1.Token, "a JWT signed by a key removed from the bundle")
 }

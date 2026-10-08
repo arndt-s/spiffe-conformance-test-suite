@@ -1,8 +1,10 @@
 # SDK Harness Contract — v1 (draft)
 
-> **Status: Draft.** The suite currently speaks the v0 protocol described in the
-> README (`SPIFFE_JWT_PORT` / `SPIFFE_X509_PORT` / `READY`). v1 replaces it before
-> the first tagged release; v0 support will be removed at that point.
+> **Status: Draft, implemented.** The suite speaks v1. It still accepts v0
+> harnesses (no `SPIFFE_HARNESS_VERSION` line, `SPIFFE_JWT_PORT`) so that existing
+> harnesses keep working, but tests that need v1 endpoints are reported as `SKIP`
+> for them. v0 support will be removed before the first tagged release.
+> `sdks/go-spiffe` is the reference v1 harness.
 
 A *harness* is a small program, written once per SDK, that exposes the SDK's
 behaviour to the suite over the network. The suite never links against an SDK; it

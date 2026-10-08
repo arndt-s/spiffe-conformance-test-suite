@@ -28,6 +28,17 @@ type ExecutionError struct{ Err error }
 func (e *ExecutionError) Error() string { return e.Err.Error() }
 func (e *ExecutionError) Unwrap() error { return e.Err }
 
+// SkipError marks a test as skipped, e.g. because the harness does not
+// support an operation the test needs.
+type SkipError struct{ Reason string }
+
+func (e *SkipError) Error() string { return e.Reason }
+
+// Skipf returns a SkipError with a formatted reason.
+func Skipf(format string, args ...any) error {
+	return &SkipError{Reason: fmt.Sprintf(format, args...)}
+}
+
 // ExecErrorf returns an ExecutionError with a formatted message.
 func ExecErrorf(format string, args ...any) error {
 	return &ExecutionError{Err: fmt.Errorf(format, args...)}
@@ -128,6 +139,15 @@ func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) (res result.Resu
 
 	runErr := tc.Run(ctx, env)
 	var execErr *ExecutionError
+	var skipErr *SkipError
+	if errors.As(runErr, &skipErr) {
+		return result.Result{
+			Name:        tc.Name,
+			Description: tc.Description,
+			Status:      result.StatusSkip,
+			Message:     skipErr.Reason,
+		}
+	}
 	if errors.As(runErr, &execErr) {
 		return result.Result{
 			Name:        tc.Name,
