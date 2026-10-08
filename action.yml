@@ -24,6 +24,10 @@ inputs:
     description: Number of test cases to run concurrently.
     required: false
     default: '1'
+  ready-timeout:
+    description: How long to wait for the harness to print READY (Go duration, e.g. 30s).
+    required: false
+    default: 10s
   results-file:
     description: If set, the results are also written to this file as JSON.
     required: false
@@ -84,13 +88,14 @@ runs:
         INPUT_ARGS: ${{ inputs.args }}
         INPUT_TESTS: ${{ inputs.tests }}
         INPUT_PARALLEL: ${{ inputs.parallel }}
+        INPUT_READY_TIMEOUT: ${{ inputs.ready-timeout }}
         INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_RESULTS_FILE: ${{ inputs.results-file }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
       run: |
         set -uo pipefail
         results="${INPUT_RESULTS_FILE:-$RUNNER_TEMP/spiffe-conformance-results.json}"
-        flags=( --cmd "$INPUT_CMD" --output "$INPUT_OUTPUT" --results-file "$results" --parallel "$INPUT_PARALLEL" )
+        flags=( --cmd "$INPUT_CMD" --output "$INPUT_OUTPUT" --results-file "$results" --parallel "$INPUT_PARALLEL" --ready-timeout "$INPUT_READY_TIMEOUT" )
         if [ -n "$INPUT_ARGS" ]; then
           flags+=( --args "$INPUT_ARGS" )
         fi

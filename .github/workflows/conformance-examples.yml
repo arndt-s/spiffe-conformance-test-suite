@@ -27,6 +27,7 @@ jobs:
         with:
           cmd: ./sdks/go-spiffe/go-spiffe
           results-file: results.json
+          parallel: '4'
           suite-version: ${{ env.SUITE_VERSION }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -49,7 +50,9 @@ jobs:
         with:
           cmd: java
           args: -jar,sdks/java-spiffe/target/harness.jar
+          ready-timeout: 30s
           results-file: results.json
+          parallel: '4'
           suite-version: ${{ env.SUITE_VERSION }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -73,6 +76,7 @@ jobs:
           cmd: sdks/py-spiffe/.venv/bin/python
           args: sdks/py-spiffe/harness.py
           results-file: results.json
+          parallel: '4'
           suite-version: ${{ env.SUITE_VERSION }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -96,6 +100,7 @@ jobs:
           cmd: sdks/spiffe-defakto-py/.venv/bin/python
           args: sdks/spiffe-defakto-py/harness.py
           results-file: results.json
+          parallel: '4'
           suite-version: ${{ env.SUITE_VERSION }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -117,6 +122,7 @@ jobs:
         with:
           cmd: sdks/rust-spiffe/target/release/rust-spiffe-harness
           results-file: results.json
+          parallel: '4'
           suite-version: ${{ env.SUITE_VERSION }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -145,6 +151,7 @@ jobs:
           cmd: node
           args: sdks/${{ matrix.sdk }}/dist/index.js
           results-file: results.json
+          parallel: '4'
           suite-version: ${{ env.SUITE_VERSION }}
       - uses: actions/upload-artifact@v4
         if: always()

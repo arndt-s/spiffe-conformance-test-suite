@@ -115,6 +115,7 @@ jobs:
 | `tests`          | no       | `''`     | Comma-separated test IDs or groups to run (e.g. `XV,JV-2`). Empty runs all.                |
 | `output`         | no       | `text`   | Log output format: `text` or `json`.                                                       |
 | `parallel`       | no       | `1`      | Number of test cases to run concurrently.                                                  |
+| `ready-timeout`  | no       | `10s`    | How long to wait for the harness to print `READY`.                                         |
 | `results-file`   | no       | `''`     | Also write the results as JSON to this path (defaults to a file in `$RUNNER_TEMP`).        |
 | `verbose`        | no       | `false`  | Enable verbose logging.                                                                    |
 | `suite-version`  | no       | `latest` | Suite version to install (git tag, branch, or `latest`).                                   |
