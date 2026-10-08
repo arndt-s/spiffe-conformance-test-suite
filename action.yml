@@ -20,6 +20,10 @@ inputs:
     description: 'Format of the log output: text or json.'
     required: false
     default: text
+  parallel:
+    description: Number of test cases to run concurrently.
+    required: false
+    default: '1'
   results-file:
     description: If set, the results are also written to this file as JSON.
     required: false
@@ -79,13 +83,14 @@ runs:
         INPUT_CMD: ${{ inputs.cmd }}
         INPUT_ARGS: ${{ inputs.args }}
         INPUT_TESTS: ${{ inputs.tests }}
+        INPUT_PARALLEL: ${{ inputs.parallel }}
         INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_RESULTS_FILE: ${{ inputs.results-file }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
       run: |
         set -uo pipefail
         results="${INPUT_RESULTS_FILE:-$RUNNER_TEMP/spiffe-conformance-results.json}"
-        flags=( --cmd "$INPUT_CMD" --output "$INPUT_OUTPUT" --results-file "$results" )
+        flags=( --cmd "$INPUT_CMD" --output "$INPUT_OUTPUT" --results-file "$results" --parallel "$INPUT_PARALLEL" )
         if [ -n "$INPUT_ARGS" ]; then
           flags+=( --args "$INPUT_ARGS" )
         fi
@@ -111,9 +116,13 @@ runs:
             echo "| --- | --- | --- | --- |"
             jq -r '"| \(.passed) | \(.failed) | \(.skipped) | \(.errors) |"' "$results"
             echo
-            echo "| Test | Status | Message |"
-            echo "| --- | --- | --- |"
-            jq -r '.results[] | "| \(.name) | \(.status) | \((.message // "") | gsub("\\|"; "\\\\|") | gsub("\n"; " ")) |"' "$results"
+            echo "| Feature | Claim | MUST passed | MUST failed | MUST skipped | MUST errors |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+            jq -r '.claims[] | select(.status != "not-run") | "| \(.feature) | \(.status) | \(.must_passed) | \(.must_failed) | \(.must_skipped) | \(.must_errors) |"' "$results"
+            echo
+            echo "| Test | Level | Status | Message |"
+            echo "| --- | --- | --- | --- |"
+            jq -r '.results[] | "| \(.name) | \(.level) | \(.status) | \((.message // "") | gsub("\\|"; "\\\\|") | gsub("\n"; " ")) |"' "$results"
           } >> "$GITHUB_STEP_SUMMARY"
         fi
         exit $status

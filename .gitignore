@@ -1,3 +1,6 @@
 sdks/go-spiffe/go-spiffe
 sdks/defakto-spiffe-ts/dist/
 sdks/defakto-spiffe-ts/node_modules/
+
+# Agent worktrees
+.claude/worktrees/

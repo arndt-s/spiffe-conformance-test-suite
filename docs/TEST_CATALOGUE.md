@@ -1,9 +1,10 @@
-# Test Catalogue (draft)
+# Test Catalogue
 
-> **Status: Draft.** This catalogue is the source of truth for which test cases
-> exist, what each one asserts, and why. Test IDs here are stable once released.
-> The [mapping table](#9-mapping-from-current-tests) shows how today's X1–X13 /
-> J1–J13 map onto it.
+> This catalogue is the source of truth for which test cases exist, what each
+> one asserts, and why. Test IDs are stable once released. Sub-results carry a
+> `/<variant>` suffix (e.g. `XV-8/server`, `JV-2/RS256`). The
+> [mapping table](#9-mapping-from-earlier-tests) shows how the earlier X1–X13 /
+> J1–J13 tests map onto it.
 
 Every test case comes from a requirement on a **Workload API client / SDK** in the
 SPIFFE specifications. Requirements on servers, issuers or control planes are out
@@ -247,9 +248,9 @@ barrier pattern.
 | HX-8 | … whose private key does not match the certificate | OPT |
 | HX-9 | … whose `spiffe_id` field differs from the certificate's URI SAN | OPT |
 
-## 9. Mapping from current tests
+## 9. Mapping from earlier tests
 
-| Current | New | Notes |
+| Earlier | New | Notes |
 | --- | --- | --- |
 | X1 | XS-1 | |
 | X2 | XS-3 | |

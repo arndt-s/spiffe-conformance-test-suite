@@ -13,7 +13,8 @@ Module: `github.com/arndt-s/spiffe-conformance-test-suite`
 ```bash
 go build ./...          # build all packages
 go test ./...           # run all tests
-go test ./... -run X1   # run a single test case by name
+go test ./...           # unit tests of the suite itself
+go run ./cmd/suite run --cmd <harness> --tests XV-8   # run catalogue tests against a harness
 go vet ./...            # static analysis
 ```
 
@@ -24,7 +25,7 @@ go vet ./...            # static analysis
 The suite drives each test case by:
 1. Creating a fresh UDS path under a temp directory
 2. Spawning `<cmd> <args>` with `SPIFFE_ENDPOINT_SOCKET=unix://<tmp-socket-path>`
-3. Reading stdout until `READY` (contract v1: `SPIFFE_HARNESS_VERSION=1`, `SPIFFE_X509_PORT`, `SPIFFE_CONTROL_PORT`; deprecated v0: `SPIFFE_X509_PORT`, `SPIFFE_JWT_PORT`)
+3. Reading stdout until `READY` (`SPIFFE_HARNESS_VERSION=1`, `SPIFFE_X509_PORT`, `SPIFFE_CONTROL_PORT`)
 4. Running the test case (probing the SDK's exposed ports)
 5. Terminating the subprocess and cleaning up
 
@@ -48,12 +49,14 @@ Test results (PASS/FAIL/SKIP) never fail a run; only ERROR (test could not be ex
 
 ### Test Cases
 
-Currently registered: X1–X13 and J1–J13 (legacy IDs, mapped to catalogue IDs in `docs/TEST_CATALOGUE.md` §9), plus catalogue tests JF-1 and XV-1/client. New tests use catalogue IDs.
+Every test case implements an entry of `docs/TEST_CATALOGUE.md` and is registered with `suite.Register(suite.TestCase{ID, Description, Level, Feature, Ref, Options, Run})`. Packages: `tests/workload` (EP, WA, HX), `tests/x509` (XS, XV, XF, ID-1/x509-*), `tests/jwt` (JV, ID), `tests/jwtbundle` (JB, JF).
+
+Rules for tests: a positive control before every negative assertion; barrier updates (`PushX509AndWait`, `WaitForSVID`, `WaitForJWTAccepted`) instead of sleeps; `suite.ExecErrorf` for suite-side failures, plain errors for SDK misbehaviour.
 
 ### CLI
 
 ```
-suite run --cmd <binary> --args <arg1,arg2,...>
+suite run --cmd <binary> --args <arg1,arg2,...> [--tests IDs/groups] [--parallel N] [--output json] [--results-file f]
 ```
 
-Supports `--output json` for machine-readable CI output.
+The report includes per-level counts and a conformance claim per feature (from its MUST tests).

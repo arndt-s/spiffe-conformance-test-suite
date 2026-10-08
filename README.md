@@ -14,90 +14,69 @@ The test suite validates SDK implementations by:
 
 Each test case runs in complete isolation with its own subprocess, UDS socket, and ephemeral certificates.
 
-## SDK Requirements
+## Running the suite
 
-> **New harnesses should implement contract v1:
-> [docs/HARNESS_CONTRACT.md](docs/HARNESS_CONTRACT.md).** `sdks/go-spiffe` is the
-> reference implementation. The rest of this section describes the deprecated v0
-> protocol, which the suite still accepts. The planned test set is in
-> [docs/TEST_CATALOGUE.md](docs/TEST_CATALOGUE.md).
+```bash
+go run ./cmd/suite run --cmd <harness binary> [--args a,b,c] [--tests XV,JV-2] [--parallel 4] [--output json] [--results-file results.json]
+```
 
-To be compatible with this conformance test suite, SDKs must implement the following behavior:
+- `--tests` selects test cases by catalogue ID, sub-result or group: `XV-8`
+  runs `XV-8/server` and `XV-8/client`, `JV` runs every JWT validation test.
+  Without it, every test case runs.
+- `--parallel` runs that many test cases at once. Each test case still gets its
+  own harness process and mock Workload API.
 
-### Initialization
+The report lists each result with its level (MUST/SHOULD/OPT) and spec
+reference, followed by a **conformance claim per feature**:
 
-Upon invocation, the SDK must:
+| Claim | Meaning |
+| --- | --- |
+| `conformant` | Every MUST test of the feature passed. |
+| `non-conformant` | At least one MUST test failed. |
+| `incomplete` | No MUST test failed, but some were skipped or could not run. |
+| `unsupported` | The harness does not support the feature. |
 
-1. **Read the Workload API endpoint** from the `SPIFFE_ENDPOINT_SOCKET` environment variable
-2. **Connect to the Workload API** over the Unix Domain Socket
-3. **Print readiness signals** to stdout in the following format:
-   ```
-   SPIFFE_JWT_PORT=<port>
-   SPIFFE_X509_PORT=<port>
-   READY
-   ```
-   - Lines may appear in any order
-   - `READY` must be the last line printed
-   - Ports should be OS-assigned (typically using `:0`)
-   - The SDK must have successfully connected to the Workload API before printing `READY`
+## Harnesses
 
-### JWT SVID Endpoint
+The suite talks to an SDK through a small **harness** program that exposes the
+SDK over a TLS port and an HTTP control port. The protocol is defined in
+[docs/HARNESS_CONTRACT.md](docs/HARNESS_CONTRACT.md); `sdks/go-spiffe` is the
+reference implementation.
 
-The SDK must expose an HTTP server on `SPIFFE_JWT_PORT` that:
+Harnesses in this repository:
 
-- **Accepts requests** at `GET /jwt` or `POST /jwt`
-- **Validates JWT-SVIDs** passed in the `Authorization: Bearer <JWT-SVID>` header
-- **Checks audience** — must validate for audience `"conformance"` and reject any other audience
-- **Returns JSON responses** with the following structure:
+| SDK | Language | Directory |
+| --- | --- | --- |
+| [go-spiffe](https://github.com/spiffe/go-spiffe) | Go | `sdks/go-spiffe` |
+| [java-spiffe](https://github.com/spiffe/java-spiffe) | Java | `sdks/java-spiffe` |
+| [py-spiffe](https://github.com/HewlettPackard/py-spiffe) + spiffe-tls | Python | `sdks/py-spiffe` |
+| [rust-spiffe](https://github.com/maxlambrecht/rust-spiffe) + spiffe-rustls | Rust | `sdks/rust-spiffe` |
+| spiffe-defakto | Python | `sdks/spiffe-defakto-py` |
+| @defakto/spiffe | TypeScript | `sdks/defakto-spiffe-ts` |
+| [spiffe](https://github.com/depot/node-spiffe) (Depot) | TypeScript | `sdks/node-spiffe` |
+| [@jeengbe/spiffe](https://github.com/jeengbe/ts-packages) | TypeScript | `sdks/jeengbe-spiffe` |
 
-  ```json
-  {
-    "status": "valid",
-    "spiffe_id": "spiffe://example.org/workload",
-    "message": "Optional context message"
-  }
-  ```
+Each directory's README has its build and run commands.
 
-  - `status`: `"valid"` on success, `"invalid"` or `"error"` on failure
-  - `spiffe_id`: The SPIFFE ID extracted from the validated JWT-SVID
-  - `message`: Optional human-readable context (especially useful for errors)
+## Test cases
 
-- **Use appropriate HTTP status codes**:
-  - `200 OK` — JWT is valid and audience matches
-  - `401 Unauthorized` — JWT is invalid, expired, or audience doesn't match
+Every test case is derived from a requirement the SPIFFE specifications place on
+Workload API clients, and is listed in
+[docs/TEST_CATALOGUE.md](docs/TEST_CATALOGUE.md) with its level and spec
+reference:
 
-### X.509 SVID Endpoint
-
-The SDK must expose a TLS server on `SPIFFE_X509_PORT` that:
-
-- **Performs mutual TLS (mTLS)** using the X.509 SVID obtained from the Workload API
-- **Presents the X.509 SVID certificate** to connecting clients
-- **Validates client certificates** against the trust bundle from the Workload API
-- **Accepts connections** from clients presenting valid certificates in the trust bundle
-
-The test suite will connect to this port and verify:
-- The presented certificate chain is valid
-- The leaf certificate contains the expected SPIFFE ID
-- Certificate rotation is handled correctly
-- Trust bundle updates are applied
-
-## Test Cases
-
-### X.509 SVID Tests (X1–X5)
-
-- **X1**: X.509 SVID issuance — verify SDK receives and uses a valid X.509 SVID
-- **X2**: Certificate validity — ensure SDK rejects expired or invalid certificates
-- **X3**: Trust bundle handling — validate SDK uses the correct trust bundle
-- **X4**: SVID rotation — confirm SDK picks up new SVIDs when rotated
-- **X5**: Bundle-before-SVID rotation — test rotation sequence edge cases
-
-### JWT SVID Tests (J1–J5)
-
-- **J1**: JWT SVID issuance — verify SDK receives and validates JWT SVIDs
-- **J2**: Algorithm conformance — ensure SDK supports required signature algorithms
-- **J3**: Audience matching — validate proper audience claim validation
-- **J4**: Expiry handling — confirm SDK rejects expired JWTs
-- **J5**: Bundle consistency — verify JWT validation uses current bundle
+| Group | Covers |
+| --- | --- |
+| `EP` | Workload Endpoint: discovery, security header, error codes and retries |
+| `WA` | Workload API client behaviour: reconnects, malformed responses, default identity |
+| `XS` | The X.509-SVID the SDK presents: chains, rotation, bundle updates |
+| `XV` | Peer X.509-SVID validation, as TLS server and as TLS client |
+| `XF` | X.509 federation |
+| `JV` | JWT-SVID validation |
+| `JB` | JWT bundles: rotation, key selection, JWK handling |
+| `JF` | Fetching JWT-SVIDs |
+| `ID` | SPIFFE ID parsing |
+| `HX` | Optional hardening (not required by any spec) |
 
 ## GitHub Action
 
@@ -117,7 +96,7 @@ jobs:
         with:
           cmd: ./bin/harness
           args: --foo,--bar
-          tests: X1,X2,J1,J3        # optional; runs all if omitted
+          tests: XS,XV,JV           # optional; runs all if omitted
           results-file: conformance.json
 
       - uses: actions/upload-artifact@v4
@@ -133,8 +112,9 @@ jobs:
 | ---------------- | -------- | -------- | ------------------------------------------------------------------------------------------ |
 | `cmd`            | yes      | —        | Path to the SDK harness binary to test.                                                    |
 | `args`           | no       | `''`     | Comma-separated arguments to pass to the harness.                                          |
-| `tests`          | no       | `''`     | Comma-separated test cases to run (e.g. `X1,J3`). Empty runs all.                          |
+| `tests`          | no       | `''`     | Comma-separated test IDs or groups to run (e.g. `XV,JV-2`). Empty runs all.                |
 | `output`         | no       | `text`   | Log output format: `text` or `json`.                                                       |
+| `parallel`       | no       | `1`      | Number of test cases to run concurrently.                                                  |
 | `results-file`   | no       | `''`     | Also write the results as JSON to this path (defaults to a file in `$RUNNER_TEMP`).        |
 | `verbose`        | no       | `false`  | Enable verbose logging.                                                                    |
 | `suite-version`  | no       | `latest` | Suite version to install (git tag, branch, or `latest`).                                   |
