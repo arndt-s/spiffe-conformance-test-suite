@@ -14,14 +14,26 @@ import (
 )
 
 type runFlags struct {
-	cmd          string
-	args         string
-	tests        string
-	allowFailure string
-	output       string
-	verbose      bool
-	strict       bool
+	cmd         string
+	args        string
+	tests       string
+	output      string
+	resultsFile string
+	verbose     bool
 }
+
+// ExitCodeNotExecuted is the exit status when one or more test cases could not
+// be executed (status ERROR). Test outcomes (PASS/FAIL/SKIP) never affect the
+// exit status: a FAIL is a valid result, not a failed run.
+const ExitCodeNotExecuted = 2
+
+// ExitError carries a specific process exit code.
+type ExitError struct {
+	Code int
+	Msg  string
+}
+
+func (e *ExitError) Error() string { return e.Msg }
 
 func newRunCmd() *cobra.Command {
 	var flags runFlags
@@ -29,6 +41,12 @@ func newRunCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Run the conformance test suite against an SDK harness",
+		Long: `Run the conformance test suite against an SDK harness.
+
+The exit status reports whether the run could be carried out, not whether the
+SDK conforms. It is 0 when every selected test case executed, whatever its
+result (PASS, FAIL or SKIP); 2 when one or more test cases could not be
+executed (ERROR); and 1 for invalid usage or internal errors.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runSuite(cmd.Context(), cmd, flags)
 		},
@@ -38,10 +56,9 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.cmd, "cmd", "", "Path to the SDK harness binary (required)")
 	cmd.Flags().StringVar(&flags.args, "args", "", "Comma-separated arguments to pass to the harness")
 	cmd.Flags().StringVar(&flags.tests, "tests", "", "Comma-separated list of test cases to run (e.g. X1,J3); empty runs all")
-	cmd.Flags().StringVar(&flags.allowFailure, "allow-failure", "", "Comma-separated list of tests whose failures should be tolerated (reported as SKIP)")
-	cmd.Flags().StringVar(&flags.output, "output", "text", "Output format: text or json")
+	cmd.Flags().StringVar(&flags.output, "output", "text", "Output format for stdout: text or json")
+	cmd.Flags().StringVar(&flags.resultsFile, "results-file", "", "Also write the results as JSON to this file")
 	cmd.Flags().BoolVarP(&flags.verbose, "verbose", "v", false, "Enable verbose logging")
-	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Exit non-zero if any non-tolerated test fails or errors")
 	_ = cmd.MarkFlagRequired("cmd")
 
 	return cmd
@@ -50,7 +67,6 @@ func newRunCmd() *cobra.Command {
 func runSuite(ctx context.Context, cmd *cobra.Command, flags runFlags) error {
 	args := parseList(flags.args)
 	include := parseList(flags.tests)
-	allow := toSet(parseList(flags.allowFailure))
 
 	var stOut, stErr io.Writer
 	if flags.verbose {
@@ -75,15 +91,6 @@ func runSuite(ctx context.Context, cmd *cobra.Command, flags runFlags) error {
 		if err != nil {
 			return err
 		}
-		if allow[res.Name] && (res.Status == result.StatusFail || res.Status == result.StatusError) {
-			orig := res.Message
-			res.Status = result.StatusSkip
-			if orig != "" {
-				res.Message = "tolerated failure: " + orig
-			} else {
-				res.Message = "tolerated failure"
-			}
-		}
 		report.Add(res)
 	}
 
@@ -91,8 +98,21 @@ func runSuite(ctx context.Context, cmd *cobra.Command, flags runFlags) error {
 		return err
 	}
 
-	if flags.strict && (report.Failed > 0 || report.Errors > 0) {
-		return fmt.Errorf("strict: %d failed, %d errored", report.Failed, report.Errors)
+	if flags.resultsFile != "" {
+		b, err := report.JSON()
+		if err != nil {
+			return fmt.Errorf("marshal report: %w", err)
+		}
+		if err := os.WriteFile(flags.resultsFile, append(b, '\n'), 0o644); err != nil {
+			return fmt.Errorf("write results file: %w", err)
+		}
+	}
+
+	if report.Errors > 0 {
+		return &ExitError{
+			Code: ExitCodeNotExecuted,
+			Msg:  fmt.Sprintf("%d test case(s) could not be executed", report.Errors),
+		}
 	}
 	return nil
 }

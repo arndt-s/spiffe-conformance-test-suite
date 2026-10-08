@@ -6,9 +6,9 @@ import "encoding/json"
 type Status string
 
 const (
-	StatusPass Status = "PASS"
-	StatusFail Status = "FAIL"
-	StatusSkip Status = "SKIP"
+	StatusPass  Status = "PASS"
+	StatusFail  Status = "FAIL"
+	StatusSkip  Status = "SKIP"
 	StatusError Status = "ERROR"
 )
 

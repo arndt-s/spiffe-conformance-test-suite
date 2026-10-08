@@ -7,7 +7,7 @@ A black-box test suite for validating SPIFFE Workload API SDK implementations. T
 The test suite validates SDK implementations by:
 
 1. Creating a fresh Unix Domain Socket (UDS) under a temporary directory
-2. Spawning the SDK under test with `SPIFFE_WORKLOAD_ENDPOINT=unix://<tmp-socket-path>`
+2. Spawning the SDK under test with `SPIFFE_ENDPOINT_SOCKET=unix://<tmp-socket-path>`
 3. Waiting for the SDK to signal readiness via stdout
 4. Running test cases that probe the SDK's behavior
 5. Terminating the subprocess and cleaning up
@@ -16,13 +16,18 @@ Each test case runs in complete isolation with its own subprocess, UDS socket, a
 
 ## SDK Requirements
 
+> The harness protocol and the test catalogue are being reworked. See
+> [docs/HARNESS_CONTRACT.md](docs/HARNESS_CONTRACT.md) (v1 draft) and
+> [docs/TEST_CATALOGUE.md](docs/TEST_CATALOGUE.md). The rest of this section
+> describes the v0 protocol the suite currently speaks.
+
 To be compatible with this conformance test suite, SDKs must implement the following behavior:
 
 ### Initialization
 
 Upon invocation, the SDK must:
 
-1. **Read the Workload API endpoint** from the `SPIFFE_WORKLOAD_ENDPOINT` environment variable
+1. **Read the Workload API endpoint** from the `SPIFFE_ENDPOINT_SOCKET` environment variable
 2. **Connect to the Workload API** over the Unix Domain Socket
 3. **Print readiness signals** to stdout in the following format:
    ```
@@ -112,9 +117,6 @@ jobs:
           cmd: ./bin/harness
           args: --foo,--bar
           tests: X1,X2,J1,J3        # optional; runs all if omitted
-          allow-failure: X10,X11    # optional; failures here become SKIP
-          strict: 'true'            # fail the job on any non-tolerated failure
-          output: json
           results-file: conformance.json
 
       - uses: actions/upload-artifact@v4
@@ -131,11 +133,31 @@ jobs:
 | `cmd`            | yes      | —        | Path to the SDK harness binary to test.                                                    |
 | `args`           | no       | `''`     | Comma-separated arguments to pass to the harness.                                          |
 | `tests`          | no       | `''`     | Comma-separated test cases to run (e.g. `X1,J3`). Empty runs all.                          |
-| `allow-failure`  | no       | `''`     | Comma-separated tests whose failures are tolerated (reported as `SKIP`, ignored by strict).|
-| `strict`         | no       | `false`  | If `true`, fail the action on any non-tolerated test failure or error.                     |
-| `output`         | no       | `text`   | Output format: `text` or `json`.                                                           |
-| `results-file`   | no       | `''`     | Also write suite output to this path.                                                      |
+| `output`         | no       | `text`   | Log output format: `text` or `json`.                                                       |
+| `results-file`   | no       | `''`     | Also write the results as JSON to this path (defaults to a file in `$RUNNER_TEMP`).        |
 | `verbose`        | no       | `false`  | Enable verbose logging.                                                                    |
 | `suite-version`  | no       | `latest` | Suite version to install (git tag, branch, or `latest`).                                   |
 | `go-version`     | no       | `stable` | Go toolchain version used to install the suite.                                            |
 
+### Results vs. run status
+
+A test result is the outcome of the run, not a reason to fail it. An SDK that
+fails test cases is reported as such, and the run still succeeds.
+
+- `suite run` exits **0** when every selected test case executed, whatever its
+  result (`PASS`, `FAIL`, `SKIP`); **2** when one or more test cases could not be
+  executed (`ERROR`: the harness did not start, the suite could not build its
+  fixtures, or a test panicked); and **1** for invalid usage.
+- The action fails only in the `ERROR` case. It writes a results table to the job
+  summary and exposes the counts as outputs (`passed`, `failed`, `skipped`,
+  `errors`, `results-file`), so a workflow that wants to gate on results can do so
+  explicitly:
+
+```yaml
+      - id: conformance
+        uses: arndt-s/spiffe-conformance-test-suite@v1
+        with:
+          cmd: ./bin/harness
+      - if: steps.conformance.outputs.failed != '0'
+        run: exit 1
+```

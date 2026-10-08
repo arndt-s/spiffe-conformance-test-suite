@@ -16,20 +16,12 @@ inputs:
     description: Comma-separated list of test cases to run (e.g. X1,J3). Empty runs all.
     required: false
     default: ''
-  allow-failure:
-    description: Comma-separated list of test cases whose failures should be tolerated. Tolerated failures are reported as SKIP and do not cause strict mode to fail.
-    required: false
-    default: ''
-  strict:
-    description: If true, the action fails when any non-tolerated test fails or errors.
-    required: false
-    default: 'false'
   output:
-    description: 'Output format: text or json.'
+    description: 'Format of the log output: text or json.'
     required: false
     default: text
   results-file:
-    description: If set, the suite output is also written to this file (useful with output=json).
+    description: If set, the results are also written to this file as JSON.
     required: false
     default: ''
   verbose:
@@ -45,10 +37,25 @@ inputs:
     required: false
     default: stable
 
+# The action fails only if test cases could not be executed (status ERROR).
+# Test results (PASS/FAIL/SKIP) are reported through the outputs below and do
+# not fail the action; gate on them in your workflow if you want to.
 outputs:
   results-file:
-    description: Path to the results file, if results-file was provided.
-    value: ${{ inputs.results-file }}
+    description: Path to the JSON results file.
+    value: ${{ steps.run.outputs.results-file }}
+  passed:
+    description: Number of test cases that passed.
+    value: ${{ steps.run.outputs.passed }}
+  failed:
+    description: Number of test cases that failed (the SDK did not conform).
+    value: ${{ steps.run.outputs.failed }}
+  skipped:
+    description: Number of test cases that were skipped.
+    value: ${{ steps.run.outputs.skipped }}
+  errors:
+    description: Number of test cases that could not be executed.
+    value: ${{ steps.run.outputs.errors }}
 
 runs:
   using: composite
@@ -66,36 +73,47 @@ runs:
         echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
     - name: Run conformance suite
+      id: run
       shell: bash
       env:
         INPUT_CMD: ${{ inputs.cmd }}
         INPUT_ARGS: ${{ inputs.args }}
         INPUT_TESTS: ${{ inputs.tests }}
-        INPUT_ALLOW_FAILURE: ${{ inputs.allow-failure }}
-        INPUT_STRICT: ${{ inputs.strict }}
         INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_RESULTS_FILE: ${{ inputs.results-file }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
       run: |
-        set -euo pipefail
-        flags=( --cmd "$INPUT_CMD" --output "$INPUT_OUTPUT" )
+        set -uo pipefail
+        results="${INPUT_RESULTS_FILE:-$RUNNER_TEMP/spiffe-conformance-results.json}"
+        flags=( --cmd "$INPUT_CMD" --output "$INPUT_OUTPUT" --results-file "$results" )
         if [ -n "$INPUT_ARGS" ]; then
           flags+=( --args "$INPUT_ARGS" )
         fi
         if [ -n "$INPUT_TESTS" ]; then
           flags+=( --tests "$INPUT_TESTS" )
         fi
-        if [ -n "$INPUT_ALLOW_FAILURE" ]; then
-          flags+=( --allow-failure "$INPUT_ALLOW_FAILURE" )
-        fi
-        if [ "$INPUT_STRICT" = "true" ]; then
-          flags+=( --strict )
-        fi
         if [ "$INPUT_VERBOSE" = "true" ]; then
           flags+=( --verbose )
         fi
-        if [ -n "$INPUT_RESULTS_FILE" ]; then
-          suite run "${flags[@]}" | tee "$INPUT_RESULTS_FILE"
-        else
-          suite run "${flags[@]}"
+
+        suite run "${flags[@]}"
+        status=$?
+
+        if [ -f "$results" ]; then
+          echo "results-file=$results" >> "$GITHUB_OUTPUT"
+          for k in passed failed skipped errors; do
+            echo "$k=$(jq -r ".$k" "$results")" >> "$GITHUB_OUTPUT"
+          done
+          {
+            echo "### SPIFFE conformance results"
+            echo
+            echo "| Passed | Failed | Skipped | Errors |"
+            echo "| --- | --- | --- | --- |"
+            jq -r '"| \(.passed) | \(.failed) | \(.skipped) | \(.errors) |"' "$results"
+            echo
+            echo "| Test | Status | Message |"
+            echo "| --- | --- | --- |"
+            jq -r '.results[] | "| \(.name) | \(.status) | \((.message // "") | gsub("\\|"; "\\\\|") | gsub("\n"; " ")) |"' "$results"
+          } >> "$GITHUB_STEP_SUMMARY"
         fi
+        exit $status
