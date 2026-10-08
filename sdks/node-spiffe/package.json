@@ -1,0 +1,19 @@
+{
+  "name": "node-spiffe-harness",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SPIFFE conformance harness (contract v1) for the `spiffe` npm package (github.com/depot/node-spiffe)",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "spiffe": "0.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "typescript": "5.7.2"
+  }
+}
