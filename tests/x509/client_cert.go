@@ -45,11 +45,14 @@ func runX10(ctx context.Context, env *suite.TestEnv) error {
 	if err != nil {
 		return suite.ExecErrorf("issue IsCA cert: %w", err)
 	}
-	_, err = env.ProbeX509WithCert(badCert)
-	if err == nil {
+	accepted, err := env.ClientCertVerdict(badCert)
+	if err != nil {
+		return err
+	}
+	if accepted {
 		return fmt.Errorf("X10: SDK accepted mTLS client cert with IsCA=true")
 	}
-	return nil // connection was rejected — correct behaviour
+	return nil
 }
 
 func runX11(ctx context.Context, env *suite.TestEnv) error {
@@ -63,8 +66,11 @@ func runX11(ctx context.Context, env *suite.TestEnv) error {
 	if err != nil {
 		return suite.ExecErrorf("issue keyCertSign cert: %w", err)
 	}
-	_, err = env.ProbeX509WithCert(badCert)
-	if err == nil {
+	accepted, err := env.ClientCertVerdict(badCert)
+	if err != nil {
+		return err
+	}
+	if accepted {
 		return fmt.Errorf("X11: SDK accepted mTLS client cert with keyCertSign key usage")
 	}
 	return nil
@@ -82,8 +88,11 @@ func runX12(ctx context.Context, env *suite.TestEnv) error {
 	if err != nil {
 		return suite.ExecErrorf("issue two-URI cert: %w", err)
 	}
-	_, err = env.ProbeX509WithCert(badCert)
-	if err == nil {
+	accepted, err := env.ClientCertVerdict(badCert)
+	if err != nil {
+		return err
+	}
+	if accepted {
 		return fmt.Errorf("X12: SDK accepted mTLS client cert with more than one URI SAN")
 	}
 	return nil
@@ -101,8 +110,11 @@ func runX13(ctx context.Context, env *suite.TestEnv) error {
 	if err != nil {
 		return suite.ExecErrorf("issue non-spiffe URI cert: %w", err)
 	}
-	_, err = env.ProbeX509WithCert(badCert)
-	if err == nil {
+	accepted, err := env.ClientCertVerdict(badCert)
+	if err != nil {
+		return err
+	}
+	if accepted {
 		return fmt.Errorf("X13: SDK accepted mTLS client cert with non-spiffe:// URI SAN")
 	}
 	return nil

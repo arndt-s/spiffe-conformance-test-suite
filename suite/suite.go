@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/result"
+	"github.com/arndt-s/spiffe-conformance-test-suite/internal/workloadapi"
 )
 
 // TestFunc is the signature every test case must implement. It returns nil if
@@ -114,7 +115,20 @@ func RunOne(ctx context.Context, name string, cfg RunnerConfig) (result.Result, 
 	return runOne(ctx, tc, cfg), nil
 }
 
-func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) (res result.Result) {
+func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) result.Result {
+	res, env := runCase(ctx, tc, cfg)
+	if env != nil {
+		for _, c := range env.Server().Calls() {
+			if c.Method == workloadapi.MethodValidateJWTSVID {
+				res.Delegated = true
+				break
+			}
+		}
+	}
+	return res
+}
+
+func runCase(ctx context.Context, tc TestCase, cfg RunnerConfig) (res result.Result, env *TestEnv) {
 	env, cleanup, err := newTestEnv(ctx, cfg.Cmd, cfg.Args, cfg.StOut, cfg.StErr)
 	if err != nil {
 		return result.Result{
@@ -122,7 +136,7 @@ func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) (res result.Resu
 			Description: tc.Description,
 			Status:      result.StatusError,
 			Message:     fmt.Sprintf("setup: %v", err),
-		}
+		}, nil
 	}
 	defer cleanup()
 
@@ -134,6 +148,7 @@ func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) (res result.Resu
 				Status:      result.StatusError,
 				Message:     fmt.Sprintf("test panicked: %v", p),
 			}
+			env = nil
 		}
 	}()
 
@@ -146,7 +161,7 @@ func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) (res result.Resu
 			Description: tc.Description,
 			Status:      result.StatusSkip,
 			Message:     skipErr.Reason,
-		}
+		}, env
 	}
 	if errors.As(runErr, &execErr) {
 		return result.Result{
@@ -154,7 +169,7 @@ func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) (res result.Resu
 			Description: tc.Description,
 			Status:      result.StatusError,
 			Message:     runErr.Error(),
-		}
+		}, env
 	}
 	if runErr != nil {
 		return result.Result{
@@ -162,13 +177,13 @@ func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) (res result.Resu
 			Description: tc.Description,
 			Status:      result.StatusFail,
 			Message:     runErr.Error(),
-		}
+		}, env
 	}
 	return result.Result{
 		Name:        tc.Name,
 		Description: tc.Description,
 		Status:      result.StatusPass,
-	}
+	}, env
 }
 
 // BridgeToGoTest bridges a single named test case into the standard Go test

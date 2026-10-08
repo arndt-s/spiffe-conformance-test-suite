@@ -22,7 +22,11 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 2. **Authorization is out of scope.** Wherever the harness authenticates a peer it
    MUST authorize *any* SPIFFE ID (e.g. go-spiffe `tlsconfig.AuthorizeAny()`).
    The suite tests authentication; authorization policy is application code.
-3. **Unsupported means unsupported.** If the SDK cannot perform an operation, the
+3. **Stream handling is the SDK's job.** Reconnecting, retrying after errors and
+   re-subscribing are behaviours the suite tests (`EP`, `WA`). The harness MUST
+   NOT add them. If the SDK's watch or stream ends and the SDK does not recover,
+   the harness keeps serving whatever the SDK last provided.
+4. **Unsupported means unsupported.** If the SDK cannot perform an operation, the
    harness MUST answer `501 Not Implemented` (see §5). The suite reports the
    affected tests as `SKIP`, never as `PASS`.
 
@@ -90,6 +94,16 @@ A TLS server (TLS 1.2 or 1.3; 1.3 recommended) that:
    then closes the connection.
 4. on authentication failure, aborts the handshake (TLS alert) or closes the
    connection without writing anything.
+
+The line MUST be the client's SPIFFE ID as extracted by the SDK. An empty line
+is treated as a rejection.
+
+**SDKs without peer authentication.** If the SDK offers no way to authenticate
+peer X.509-SVIDs, the harness MUST NOT substitute another mechanism (e.g. plain
+OpenSSL/Node chain verification against the bundle). Instead it serves the
+SDK's SVID without requesting a client certificate and writes `-\n` after every
+handshake. The suite then reports peer-authentication tests as `SKIP`, while
+tests of the presented SVID still run.
 
 The suite reads the line to tell an accepted client from a rejected one.
 Rejection is otherwise invisible under TLS 1.3, where the client's handshake

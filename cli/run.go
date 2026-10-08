@@ -150,7 +150,11 @@ func printReport(report result.Report, format string) error {
 		fmt.Println(string(b))
 	default:
 		for _, r := range report.Results {
-			fmt.Fprintf(os.Stdout, "[%s] %s: %s\n", r.Status, r.Name, r.Description)
+			delegated := ""
+			if r.Delegated {
+				delegated = " (JWT validation delegated to the Workload API)"
+			}
+			fmt.Fprintf(os.Stdout, "[%s] %s: %s%s\n", r.Status, r.Name, r.Description, delegated)
 			if r.Message != "" {
 				fmt.Fprintf(os.Stdout, "       %s\n", r.Message)
 			}

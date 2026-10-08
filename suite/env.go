@@ -199,10 +199,22 @@ func (e *TestEnv) ProbeX509() (*prober.X509ProbeResult, error) {
 	return prober.ProbeX509(e.process.X509Port(), e.probeCert, e.trustPool, e.process.Version() >= 1)
 }
 
-// ProbeX509WithCert connects to the SDK's X.509 port presenting the given SVID
-// as the client certificate. It returns an error if the SDK rejected it.
-func (e *TestEnv) ProbeX509WithCert(clientSVID *ca.X509SVIDMaterial) (*prober.X509ProbeResult, error) {
-	return prober.ProbeX509(e.process.X509Port(), clientSVID.TLSCertificate(), e.trustPool, e.process.Version() >= 1)
+// UnauthenticatedPeerLine is what a v1 harness writes on the X.509 port when
+// the SDK cannot authenticate peer X.509-SVIDs (harness contract §3).
+const UnauthenticatedPeerLine = "-"
+
+// ClientCertVerdict connects to the SDK's X.509 port presenting clientSVID as
+// the client certificate and reports whether the SDK accepted it. It returns a
+// SkipError if the harness declares that the SDK cannot authenticate peers.
+func (e *TestEnv) ClientCertVerdict(clientSVID *ca.X509SVIDMaterial) (bool, error) {
+	res, err := prober.ProbeX509(e.process.X509Port(), clientSVID.TLSCertificate(), e.trustPool, e.process.Version() >= 1)
+	if err != nil {
+		return false, nil
+	}
+	if res.PeerLine == UnauthenticatedPeerLine {
+		return false, Skipf("SDK cannot authenticate peer X.509-SVIDs (harness wrote %q)", UnauthenticatedPeerLine)
+	}
+	return true, nil
 }
 
 // JWTVerdict is the SDK's decision on a JWT-SVID.

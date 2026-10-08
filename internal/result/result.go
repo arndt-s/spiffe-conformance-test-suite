@@ -19,6 +19,10 @@ type Result struct {
 	Status      Status `json:"status"`
 	// Message contains a failure reason or skip reason when Status != PASS.
 	Message string `json:"message,omitempty"`
+	// Delegated is set when the SDK called the Workload API's ValidateJWTSVID
+	// during the test: JWT validation results then reflect the mock server's
+	// validator rather than the SDK's.
+	Delegated bool `json:"delegated,omitempty"`
 }
 
 // Report aggregates results across the full run.

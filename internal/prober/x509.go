@@ -96,6 +96,8 @@ func ProbeX509(port int, clientCert tls.Certificate, trustBundle *x509.CertPool,
 	line, err := bufio.NewReader(conn).ReadString('\n')
 	var netErr net.Error
 	switch {
+	case requirePeerLine && strings.TrimSpace(line) == "":
+		return nil, fmt.Errorf("server did not accept client (no peer-ID line): %v", err)
 	case err == nil || line != "":
 		result.PeerLine = strings.TrimSpace(line)
 	case requirePeerLine:
