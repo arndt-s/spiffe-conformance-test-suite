@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,6 +62,7 @@ func newTestEnv(ctx context.Context, cmd string, args []string, stdout, stderr i
 	server.SetX509State(&workloadapi.X509State{
 		Materials:   []*ca.X509SVIDMaterial{defaultX509},
 		TrustBundle: [][]byte{authority.CACertDER()},
+		TrustDomain: authority.TrustDomain(),
 	})
 
 	defaultJWT, err := authority.IssueJWT("spiffe://test.example.org/default")
@@ -77,11 +77,9 @@ func newTestEnv(ctx context.Context, cmd string, args []string, stdout, stderr i
 		cleanup()
 		return nil, nil, fmt.Errorf("build default JWKS: %w", err)
 	}
-	u, _ := url.Parse(trustDomain)
 	server.SetJWTState(&workloadapi.JWTState{
-		Audience:   "test",
-		Materials:  []*ca.JWTSVIDMaterial{defaultJWT},
-		JWKSBundle: map[string][]byte{u.Host: defaultJWKS},
+		Materials: []*ca.JWTSVIDMaterial{defaultJWT},
+		Bundles:   map[string][]byte{authority.TrustDomain(): defaultJWKS},
 	})
 
 	probeSVID, err := authority.IssueX509SVID("spiffe://test.example.org/probe")
@@ -120,6 +118,10 @@ func newTestEnv(ctx context.Context, cmd string, args []string, stdout, stderr i
 	return env, fullCleanup, nil
 }
 
+// Server returns the mock Workload API server, e.g. to inject errors or
+// inspect recorded calls.
+func (e *TestEnv) Server() *workloadapi.Server { return e.server }
+
 // CA returns the underlying CA for direct access when needed.
 func (e *TestEnv) CA() *ca.CA { return e.ca }
 
@@ -138,6 +140,7 @@ func (e *TestEnv) ServeX509(materials ...*ca.X509SVIDMaterial) {
 	e.server.SetX509State(&workloadapi.X509State{
 		Materials:   materials,
 		TrustBundle: [][]byte{e.ca.CACertDER()},
+		TrustDomain: e.ca.TrustDomain(),
 	})
 }
 
@@ -153,25 +156,22 @@ func (e *TestEnv) ServeJWTBundle() error {
 	if err != nil {
 		return fmt.Errorf("build JWKS: %w", err)
 	}
-	u, _ := url.Parse(e.ca.TrustDomain())
 	e.server.SetJWTState(&workloadapi.JWTState{
-		JWKSBundle: map[string][]byte{u.Host: jwks},
+		Bundles: map[string][]byte{e.ca.TrustDomain(): jwks},
 	})
 	return nil
 }
 
 // ServeJWT sets the JWT state so the mock server returns the given materials.
-// It automatically populates JWKSBundle from the test CA so the SDK can validate tokens.
-func (e *TestEnv) ServeJWT(audience string, materials ...*ca.JWTSVIDMaterial) error {
+// It automatically populates the JWT bundle from the test CA so the SDK can validate tokens.
+func (e *TestEnv) ServeJWT(materials ...*ca.JWTSVIDMaterial) error {
 	jwks, err := e.ca.JWKSBytes()
 	if err != nil {
 		return fmt.Errorf("build JWKS: %w", err)
 	}
-	u, _ := url.Parse(e.ca.TrustDomain())
 	e.server.SetJWTState(&workloadapi.JWTState{
-		Audience:   audience,
-		Materials:  materials,
-		JWKSBundle: map[string][]byte{u.Host: jwks},
+		Materials: materials,
+		Bundles:   map[string][]byte{e.ca.TrustDomain(): jwks},
 	})
 	return nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"net/url"
 	"time"
 
 	jwtlib "github.com/golang-jwt/jwt/v5"
@@ -132,10 +131,9 @@ func runJ2(ctx context.Context, env *suite.TestEnv) error {
 		return fmt.Errorf("issue foreign JWT: %w", err)
 	}
 
-	// Serve the foreign token, but ServeJWT populates JWKS from env.ca (the
-	// first CA), so the public key in the bundle will not match the token's
-	// signature.
-	if err := env.ServeJWT("test", foreignMaterial); err != nil {
+	// Serve the foreign token, but ServeJWT populates the bundle from env.ca, so
+	// the token's key ID is not in the bundle.
+	if err := env.ServeJWT(foreignMaterial); err != nil {
 		return fmt.Errorf("serve JWT state: %w", err)
 	}
 
@@ -503,9 +501,8 @@ func runJ13(ctx context.Context, env *suite.TestEnv) error {
 	if err != nil {
 		return fmt.Errorf("get ca2 JWKS: %w", err)
 	}
-	u, _ := url.Parse("spiffe://test.example.org")
 	env.SetJWTState(&workloadapi.JWTState{
-		JWKSBundle: map[string][]byte{u.Host: jwks2},
+		Bundles: map[string][]byte{ca2.TrustDomain(): jwks2},
 	})
 
 	// Step 3: issue JWT2 with ca2 and poll until SDK accepts it (bundle rotated).

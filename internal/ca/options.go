@@ -71,6 +71,13 @@ type jwtSVIDConfig struct {
 	extra        map[string]interface{}
 	deleteClaims []string
 	extraHeaders map[string]interface{}
+	key          *JWTKey
+}
+
+// WithJWTKey signs the token with the given key instead of the CA's first key.
+// The key's algorithm determines the JWS "alg" header.
+func WithJWTKey(k *JWTKey) JWTSVIDOption {
+	return func(c *jwtSVIDConfig) { c.key = k }
 }
 
 func defaultJWTConfig() jwtSVIDConfig {

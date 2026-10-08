@@ -2,12 +2,16 @@
 package ca
 
 import (
+	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -15,32 +19,56 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// CA is an ephemeral certificate authority for a single trust domain.
+// JWTUse is the JWK "use" value for JWT-SVID signing keys (JWT-SVID §6.1).
+const JWTUse = "jwt-svid"
+
+// CA is an ephemeral certificate authority for a single trust domain. It holds
+// an X.509 signing certificate (a root, or an intermediate created with
+// NewIntermediate) and a set of JWT signing keys.
 type CA struct {
-	trustDomain string
+	trustDomain string // SPIFFE ID of the trust domain, e.g. "spiffe://example.org"
 	cert        *x509.Certificate
 	key         *ecdsa.PrivateKey
-	// jwtKey is a separate key used exclusively for JWT signing.
-	jwtKey    *ecdsa.PrivateKey
-	jwtKeyID  string
+	root        *x509.Certificate
+	// intermediates is the DER chain from this CA up to, but excluding, the
+	// root. Empty for a root CA.
+	intermediates [][]byte
+	jwtKeys       []*JWTKey
+}
+
+// JWTKey is a JWT-SVID signing key published in the trust domain's JWT bundle.
+type JWTKey struct {
+	ID     string
+	Alg    string
+	Signer crypto.Signer
+	// Use is the JWK "use" value published in the bundle. Defaults to JWTUse;
+	// tests may override it to publish keys a conformant SDK must ignore.
+	Use string
 }
 
 // X509SVIDMaterial contains the issued leaf certificate and its private key.
 type X509SVIDMaterial struct {
-	SPIFFEID    string
-	Cert        *x509.Certificate
-	Key         *ecdsa.PrivateKey
-	CACert      *x509.Certificate
-	CertDER     []byte
-	CACertDER   []byte
+	SPIFFEID string
+	Cert     *x509.Certificate
+	Key      *ecdsa.PrivateKey
+	// CACert is the root of the issuing hierarchy, i.e. what belongs in the bundle.
+	CACert    *x509.Certificate
+	CertDER   []byte
+	CACertDER []byte
+	// Intermediates is the DER chain between the leaf and the root, leaf-side first.
+	Intermediates [][]byte
+	// Hint is sent as the X509SVID hint by the mock Workload API.
+	Hint string
 }
 
-// CertChainDER returns the leaf + CA chain as a flat DER slice (leaf first).
+// CertChainDER returns the leaf followed by any intermediates. The root is not
+// included; it is distributed via the trust bundle.
 func (m *X509SVIDMaterial) CertChainDER() [][]byte {
-	return [][]byte{m.CertDER, m.CACertDER}
+	return append([][]byte{m.CertDER}, m.Intermediates...)
 }
 
 // KeyPEM returns the private key in PKCS8 PEM format.
@@ -57,6 +85,16 @@ func (m *X509SVIDMaterial) KeyDER() ([]byte, error) {
 	return x509.MarshalPKCS8PrivateKey(m.Key)
 }
 
+// TLSCertificate converts the material into a tls.Certificate suitable for
+// use as a client or server cert in a crypto/tls config.
+func (m *X509SVIDMaterial) TLSCertificate() tls.Certificate {
+	return tls.Certificate{
+		Certificate: m.CertChainDER(),
+		PrivateKey:  m.Key,
+		Leaf:        m.Cert,
+	}
+}
+
 // JWTSVIDMaterial holds a signed JWT string along with metadata.
 type JWTSVIDMaterial struct {
 	SPIFFEID string
@@ -65,16 +103,17 @@ type JWTSVIDMaterial struct {
 	Expiry   time.Time
 }
 
-// New creates a new CA for the given trust domain (e.g. "spiffe://example.org").
+// New creates a new root CA for the given trust domain (e.g. "spiffe://example.org")
+// with a single ES256 JWT signing key.
 func New(trustDomain string) (*CA, error) {
+	tdURI, err := url.Parse(trustDomain)
+	if err != nil {
+		return nil, fmt.Errorf("invalid trust domain %q: %w", trustDomain, err)
+	}
+
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate CA key: %w", err)
-	}
-
-	jwtKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate JWT key: %w", err)
 	}
 
 	serial, err := randomSerial()
@@ -85,6 +124,7 @@ func New(trustDomain string) (*CA, error) {
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: trustDomain + " CA"},
+		URIs:                  []*url.URL{tdURI},
 		IsCA:                  true,
 		BasicConstraintsValid: true,
 		NotBefore:             time.Now().Add(-time.Minute),
@@ -101,36 +141,70 @@ func New(trustDomain string) (*CA, error) {
 		return nil, err
 	}
 
-	return &CA{
+	c := &CA{
 		trustDomain: trustDomain,
 		cert:        caCert,
 		key:         caKey,
-		jwtKey:      jwtKey,
-		jwtKeyID:    "key-1",
+		root:        caCert,
+	}
+	if _, err := c.AddJWTKey("ES256"); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// NewIntermediate creates an intermediate CA signed by c. SVIDs issued by the
+// intermediate carry it in their chain and validate against c's root. The
+// intermediate shares c's JWT keys.
+func (c *CA) NewIntermediate() (*CA, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate intermediate key: %w", err)
+	}
+	serial, err := randomSerial()
+	if err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: c.trustDomain + " intermediate CA"},
+		URIs:                  c.cert.URIs,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(12 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, &key.PublicKey, c.key)
+	if err != nil {
+		return nil, fmt.Errorf("create intermediate cert: %w", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	return &CA{
+		trustDomain:   c.trustDomain,
+		cert:          cert,
+		key:           key,
+		root:          c.root,
+		intermediates: append([][]byte{der}, c.intermediates...),
+		jwtKeys:       c.jwtKeys,
 	}, nil
 }
 
-// TrustDomain returns the trust domain URI this CA represents.
+// TrustDomain returns the SPIFFE ID of the trust domain, e.g. "spiffe://example.org".
+// This is also the key under which the Workload API publishes its bundles.
 func (c *CA) TrustDomain() string { return c.trustDomain }
 
-// CACertDER returns the raw DER bytes of the CA certificate.
-func (c *CA) CACertDER() []byte { return c.cert.Raw }
+// CACertDER returns the raw DER bytes of the root CA certificate.
+func (c *CA) CACertDER() []byte { return c.root.Raw }
 
-// CACertPool returns a certificate pool containing this CA's certificate.
+// CACertPool returns a certificate pool containing the root CA certificate.
 func (c *CA) CACertPool() *x509.CertPool {
 	pool := x509.NewCertPool()
-	pool.AddCert(c.cert)
+	pool.AddCert(c.root)
 	return pool
-}
-
-// TLSCertificate converts the material into a tls.Certificate suitable for
-// use as a client or server cert in a crypto/tls config.
-func (m *X509SVIDMaterial) TLSCertificate() tls.Certificate {
-	return tls.Certificate{
-		Certificate: [][]byte{m.CertDER, m.CACertDER},
-		PrivateKey:  m.Key,
-		Leaf:        m.Cert,
-	}
 }
 
 // IssueX509SVID issues a leaf X.509 SVID for the given SPIFFE ID.
@@ -190,20 +264,54 @@ func (c *CA) IssueX509SVID(spiffeID string, opts ...X509SVIDOption) (*X509SVIDMa
 	}
 
 	return &X509SVIDMaterial{
-		SPIFFEID:  spiffeID,
-		Cert:      cert,
-		Key:       leafKey,
-		CACert:    c.cert,
-		CertDER:   certDER,
-		CACertDER: c.cert.Raw,
+		SPIFFEID:      spiffeID,
+		Cert:          cert,
+		Key:           leafKey,
+		CACert:        c.root,
+		CertDER:       certDER,
+		CACertDER:     c.root.Raw,
+		Intermediates: c.intermediates,
 	}, nil
 }
 
-// IssueJWT issues a signed JWT SVID for the given SPIFFE ID.
+// AddJWTKey generates a new JWT signing key for the given JWS algorithm
+// (RS256/384/512, PS256/384/512, ES256/384/512 or EdDSA) with a random key ID,
+// and adds it to the CA's JWT bundle.
+func (c *CA) AddJWTKey(alg string) (*JWTKey, error) {
+	signer, err := generateJWTSigner(alg)
+	if err != nil {
+		return nil, err
+	}
+	kid, err := randomKeyID()
+	if err != nil {
+		return nil, err
+	}
+	k := &JWTKey{ID: kid, Alg: alg, Signer: signer, Use: JWTUse}
+	c.jwtKeys = append(c.jwtKeys, k)
+	return k, nil
+}
+
+// JWTKeys returns the CA's JWT signing keys, in bundle order.
+func (c *CA) JWTKeys() []*JWTKey { return c.jwtKeys }
+
+// IssueJWT issues a signed JWT SVID for the given SPIFFE ID. It signs with the
+// CA's first JWT key unless WithJWTKey selects another.
 func (c *CA) IssueJWT(spiffeID string, opts ...JWTSVIDOption) (*JWTSVIDMaterial, error) {
 	cfg := defaultJWTConfig()
 	for _, o := range opts {
 		o(&cfg)
+	}
+
+	key := cfg.key
+	if key == nil {
+		if len(c.jwtKeys) == 0 {
+			return nil, fmt.Errorf("CA has no JWT signing keys")
+		}
+		key = c.jwtKeys[0]
+	}
+	method := jwt.GetSigningMethod(key.Alg)
+	if method == nil {
+		return nil, fmt.Errorf("unsupported JWT algorithm %q", key.Alg)
 	}
 
 	now := time.Now()
@@ -222,13 +330,13 @@ func (c *CA) IssueJWT(spiffeID string, opts ...JWTSVIDOption) (*JWTSVIDMaterial,
 		delete(claims, k)
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
-	token.Header["kid"] = c.jwtKeyID
+	token := jwt.NewWithClaims(method, claims)
+	token.Header["kid"] = key.ID
 	for k, v := range cfg.extraHeaders {
 		token.Header[k] = v
 	}
 
-	signed, err := token.SignedString(c.jwtKey)
+	signed, err := token.SignedString(key.Signer)
 	if err != nil {
 		return nil, fmt.Errorf("sign JWT: %w", err)
 	}
@@ -241,67 +349,57 @@ func (c *CA) IssueJWT(spiffeID string, opts ...JWTSVIDOption) (*JWTSVIDMaterial,
 	}, nil
 }
 
-// JWKSBytes returns the JSON Web Key Set for JWT verification.
+// JWKSBytes returns the CA's JWT bundle as a JWK Set. Each key carries its kid
+// and its use (normally "jwt-svid", JWT-SVID §6.1).
 func (c *CA) JWKSBytes() ([]byte, error) {
-	pub := c.jwtKey.PublicKey
-	x := pub.X.Bytes()
-	y := pub.Y.Bytes()
-
-	type jwk struct {
-		Kty string `json:"kty"`
-		Crv string `json:"crv"`
-		X   string `json:"x"`
-		Y   string `json:"y"`
-		Kid string `json:"kid"`
-		Use string `json:"use"`
-	}
-	type jwks struct {
-		Keys []jwk `json:"keys"`
-	}
-
-	import64 := func(b []byte) string {
-		// pad to 32 bytes for P-256
-		padded := make([]byte, 32)
-		copy(padded[32-len(b):], b)
-		return encodeBase64URL(padded)
-	}
-
-	set := jwks{
-		Keys: []jwk{{
-			Kty: "EC",
-			Crv: "P-256",
-			X:   import64(x),
-			Y:   import64(y),
-			Kid: c.jwtKeyID,
-			Use: "sig",
-		}},
+	set := struct {
+		Keys []json.RawMessage `json:"keys"`
+	}{Keys: []json.RawMessage{}}
+	for _, k := range c.jwtKeys {
+		b, err := json.Marshal(jose.JSONWebKey{Key: k.Signer.Public(), KeyID: k.ID})
+		if err != nil {
+			return nil, fmt.Errorf("marshal JWK %s: %w", k.ID, err)
+		}
+		// go-jose only accepts the RFC 7517 "use" values, so set it on the raw JSON.
+		if k.Use != "" {
+			var m map[string]any
+			if err := json.Unmarshal(b, &m); err != nil {
+				return nil, err
+			}
+			m["use"] = k.Use
+			if b, err = json.Marshal(m); err != nil {
+				return nil, err
+			}
+		}
+		set.Keys = append(set.Keys, b)
 	}
 	return json.Marshal(set)
 }
 
-// encodeBase64URL encodes bytes as base64url without padding.
-func encodeBase64URL(b []byte) string {
-	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-	n := len(b)
-	out := make([]byte, 0, (n*4+2)/3)
-	for i := 0; i < n; i += 3 {
-		var v uint32
-		v |= uint32(b[i]) << 16
-		if i+1 < n {
-			v |= uint32(b[i+1]) << 8
-		}
-		if i+2 < n {
-			v |= uint32(b[i+2])
-		}
-		out = append(out, chars[v>>18&0x3f], chars[v>>12&0x3f])
-		if i+1 < n {
-			out = append(out, chars[v>>6&0x3f])
-		}
-		if i+2 < n {
-			out = append(out, chars[v&0x3f])
-		}
+func generateJWTSigner(alg string) (crypto.Signer, error) {
+	switch alg {
+	case "RS256", "RS384", "RS512", "PS256", "PS384", "PS512":
+		return rsa.GenerateKey(rand.Reader, 2048)
+	case "ES256":
+		return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	case "ES384":
+		return ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	case "ES512":
+		return ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	case "EdDSA":
+		_, k, err := ed25519.GenerateKey(rand.Reader)
+		return k, err
+	default:
+		return nil, fmt.Errorf("unsupported JWT algorithm %q", alg)
 	}
-	return string(out)
+}
+
+func randomKeyID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate key ID: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func randomSerial() (*big.Int, error) {

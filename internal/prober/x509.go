@@ -2,41 +2,19 @@
 package prober
 
 import (
+	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
-// ProbeX509InsecureForTesting dials the SDK's X.509 port without client auth
-// and without server certificate verification. Intended for skeleton/smoke tests
-// only; production test cases should use ProbeX509 with a proper trust bundle.
-func ProbeX509InsecureForTesting(port int) (*X509ProbeResult, error) {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	conn, err := tls.DialWithDialer(
-		&net.Dialer{Timeout: 5 * time.Second},
-		"tcp",
-		addr,
-		&tls.Config{InsecureSkipVerify: true}, //nolint:gosec // intentional for test skeleton
-	)
-	if err != nil {
-		return nil, fmt.Errorf("TLS dial %s: %w", addr, err)
-	}
-	defer conn.Close()
-
-	state := conn.ConnectionState()
-	result := &X509ProbeResult{
-		PeerCerts: state.PeerCertificates,
-	}
-	if len(state.PeerCertificates) > 0 {
-		leaf := state.PeerCertificates[0]
-		for _, u := range leaf.URIs {
-			result.SpiffeIDs = append(result.SpiffeIDs, u.String())
-		}
-	}
-	return result, nil
-}
+// postHandshakeWait bounds how long ProbeX509 waits after the TLS handshake for
+// the server either to write the peer-ID line or to reject the client.
+const postHandshakeWait = 250 * time.Millisecond
 
 // X509ProbeResult holds the result of probing the SDK's X.509 port.
 type X509ProbeResult struct {
@@ -44,14 +22,20 @@ type X509ProbeResult struct {
 	PeerCerts []*x509.Certificate
 	// SpiffeIDs is the list of SPIFFE URIs found in the leaf certificate.
 	SpiffeIDs []string
+	// PeerLine is the line the server wrote after the handshake: the client's
+	// SPIFFE ID under harness contract v1. Empty for v0 harnesses.
+	PeerLine string
 }
 
 // ProbeX509 dials the SDK's X.509 port via mTLS using the provided client
 // cert/key and trust bundle, then returns the presented certificate chain.
 //
-// clientCert is the client certificate to present during the TLS handshake.
-// trustBundle is the pool of trusted CA certificates for verifying the peer.
-// port is the port number on localhost.
+// A server can reject the client certificate after the client considers the
+// handshake complete (always under TLS 1.3), so ProbeX509 also reads from the
+// connection: a TLS alert or a close without data means the client was
+// rejected and ProbeX509 returns an error. A line of data, or silence until
+// postHandshakeWait expires (v0 harnesses hold the connection open), means the
+// client was accepted.
 func ProbeX509(port int, clientCert tls.Certificate, trustBundle *x509.CertPool) (*X509ProbeResult, error) {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	conn, err := tls.DialWithDialer(
@@ -89,7 +73,6 @@ func ProbeX509(port int, clientCert tls.Certificate, trustBundle *x509.CertPool)
 	result := &X509ProbeResult{
 		PeerCerts: state.PeerCertificates,
 	}
-
 	if len(state.PeerCertificates) > 0 {
 		leaf := state.PeerCertificates[0]
 		for _, u := range leaf.URIs {
@@ -97,5 +80,18 @@ func ProbeX509(port int, clientCert tls.Certificate, trustBundle *x509.CertPool)
 		}
 	}
 
+	if err := conn.SetReadDeadline(time.Now().Add(postHandshakeWait)); err != nil {
+		return nil, fmt.Errorf("set read deadline: %w", err)
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	var netErr net.Error
+	switch {
+	case err == nil || line != "":
+		result.PeerLine = strings.TrimSpace(line)
+	case errors.As(err, &netErr) && netErr.Timeout():
+		// Server is holding the connection open: accepted (v0 harness).
+	default:
+		return nil, fmt.Errorf("server rejected client after TLS handshake: %w", err)
+	}
 	return result, nil
 }
