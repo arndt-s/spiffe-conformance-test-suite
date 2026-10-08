@@ -4,5 +4,7 @@ package tests
 
 import (
 	_ "github.com/arndt-s/spiffe-conformance-test-suite/tests/jwt"
+	_ "github.com/arndt-s/spiffe-conformance-test-suite/tests/jwtbundle"
+	_ "github.com/arndt-s/spiffe-conformance-test-suite/tests/workload"
 	_ "github.com/arndt-s/spiffe-conformance-test-suite/tests/x509"
 )

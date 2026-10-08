@@ -1,7 +1,10 @@
 // Package workloadapi provides a controllable mock SPIFFE Workload API server.
 package workloadapi
 
-import "github.com/arndt-s/spiffe-conformance-test-suite/internal/ca"
+import (
+	"github.com/arndt-s/spiffe-conformance-test-suite/internal/ca"
+	workloadv1 "github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
+)
 
 // X509State holds the current X.509 SVID material to serve. Every response the
 // server streams is built from the full state (Workload API §4.3).
@@ -19,6 +22,10 @@ type X509State struct {
 	// FederatedBundles maps a foreign trust domain's SPIFFE ID to its
 	// DER-encoded CA certificates.
 	FederatedBundles map[string][][]byte
+	// Raw, if set, is sent on FetchX509SVID streams verbatim instead of a
+	// response built from the fields above. Use BuildX509Response to start
+	// from a valid response and then break it.
+	Raw *workloadv1.X509SVIDResponse
 }
 
 // JWTState holds the current JWT SVID material to serve.

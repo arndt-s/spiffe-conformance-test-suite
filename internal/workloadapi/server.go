@@ -252,7 +252,7 @@ func (s *Server) FetchX509SVID(
 		if state == nil {
 			return false, nil
 		}
-		resp, err := x509StateToProto(state)
+		resp, err := BuildX509Response(state)
 		if err != nil {
 			return false, status.Errorf(codes.Internal, "build response: %v", err)
 		}
@@ -370,8 +370,12 @@ func (s *Server) ValidateJWTSVID(
 	return &workloadv1.ValidateJWTSVIDResponse{SpiffeId: svid.ID.String(), Claims: claims}, nil
 }
 
-// x509StateToProto converts X509State to the wire proto.
-func x509StateToProto(state *X509State) (*workloadv1.X509SVIDResponse, error) {
+// BuildX509Response converts X509State to the wire proto, or returns
+// state.Raw if it is set.
+func BuildX509Response(state *X509State) (*workloadv1.X509SVIDResponse, error) {
+	if state.Raw != nil {
+		return state.Raw, nil
+	}
 	bundle := ownBundle(state)
 	var svids []*workloadv1.X509SVID
 	for _, m := range state.Materials {

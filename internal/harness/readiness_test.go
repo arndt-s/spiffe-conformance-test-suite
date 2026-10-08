@@ -12,11 +12,11 @@ func TestParseStdout(t *testing.T) {
 		want    Readiness
 		wantErr string
 	}{
-		{"v0", "SPIFFE_JWT_PORT=2\nlog line\nSPIFFE_X509_PORT=1\nREADY\n",
-			Readiness{X509Port: 1, JWTPort: 2, Ready: true}, ""},
-		{"v1", "SPIFFE_HARNESS_VERSION=1\nSPIFFE_CONTROL_PORT=3\nSPIFFE_X509_PORT=1\nREADY\n",
+		{"v0 rejected", "SPIFFE_JWT_PORT=2\nlog line\nSPIFFE_X509_PORT=1\nREADY\n",
+			Readiness{}, "no longer supported"},
+		{"v1", "SPIFFE_HARNESS_VERSION=1\nlog line\nSPIFFE_CONTROL_PORT=3\nSPIFFE_X509_PORT=1\nREADY\n",
 			Readiness{Version: 1, X509Port: 1, ControlPort: 3, Ready: true}, ""},
-		{"v1 missing control port", "SPIFFE_HARNESS_VERSION=1\nSPIFFE_X509_PORT=1\nSPIFFE_JWT_PORT=2\nREADY\n",
+		{"v1 missing control port", "SPIFFE_HARNESS_VERSION=1\nSPIFFE_X509_PORT=1\nREADY\n",
 			Readiness{}, "SPIFFE_CONTROL_PORT"},
 		{"unknown version", "SPIFFE_HARNESS_VERSION=7\nSPIFFE_X509_PORT=1\nREADY\n", Readiness{}, "unsupported"},
 		{"exits before READY", "SPIFFE_X509_PORT=1\n", Readiness{}, "before READY"},

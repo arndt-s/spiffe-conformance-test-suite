@@ -241,3 +241,31 @@ func keys(m map[string][]byte) []string {
 	}
 	return out
 }
+
+func TestRawX509ResponseIsSentVerbatim(t *testing.T) {
+	s, client := startServer(t)
+	c := newCA(t, td)
+	svid, err := c.IssueX509SVID(td + "/workload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := &X509State{Materials: []*ca.X509SVIDMaterial{svid}}
+	raw, err := BuildX509Response(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.Svids[0].Bundle = nil
+	s.SetX509State(&X509State{Raw: raw})
+
+	stream, err := client.FetchX509SVID(withHeader(t), &workloadv1.X509SVIDRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Svids) != 1 || resp.Svids[0].Bundle != nil || resp.Svids[0].SpiffeId != td+"/workload" {
+		t.Fatalf("unexpected response: %v", resp)
+	}
+}

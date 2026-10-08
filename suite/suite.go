@@ -7,19 +7,34 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
-	"testing"
 
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/result"
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/workloadapi"
 )
 
+// Re-exported so test packages need not import internal/result.
+type (
+	Level   = result.Level
+	Feature = result.Feature
+)
+
+const (
+	MUST   = result.LevelMust
+	SHOULD = result.LevelShould
+	OPT    = result.LevelOpt
+
+	X509Server  = result.FeatureX509Server
+	X509Client  = result.FeatureX509Client
+	JWTValidate = result.FeatureJWTValidate
+	JWTFetch    = result.FeatureJWTFetch
+)
+
 // TestFunc is the signature every test case must implement. It returns nil if
 // the SDK behaved correctly, an error describing the misbehaviour if it did not
-// (reported as FAIL), or an ExecutionError if the test could not be carried out
-// (reported as ERROR).
+// (reported as FAIL), an ExecutionError if the test could not be carried out
+// (reported as ERROR), or a SkipError (reported as SKIP).
 type TestFunc func(ctx context.Context, env *TestEnv) error
 
 // ExecutionError marks a test outcome as "could not execute": the suite failed
@@ -45,11 +60,19 @@ func ExecErrorf(format string, args ...any) error {
 	return &ExecutionError{Err: fmt.Errorf(format, args...)}
 }
 
-// TestCase is the unit of work registered into the suite.
+// TestCase is the unit of work registered into the suite. Every field except
+// Options is required.
 type TestCase struct {
-	Name        string
+	// ID is the catalogue ID (docs/TEST_CATALOGUE.md), with a "/<variant>"
+	// suffix for sub-results, e.g. "XV-8/server" or "JV-2/RS256".
+	ID          string
 	Description string
-	Run         TestFunc
+	Level       Level
+	Feature     Feature
+	// Ref is the specification reference, e.g. "XS §5.2".
+	Ref     string
+	Options EnvOptions
+	Run     TestFunc
 }
 
 var (
@@ -57,15 +80,23 @@ var (
 	registry []TestCase
 )
 
-// Register adds a test case to the global registry. Typically called from
-// an init() function in a test-case file.
+// Register adds a test case to the global registry. It panics on a missing
+// field or a duplicate ID, so mistakes surface when the binary starts.
 func Register(tc TestCase) {
+	if tc.ID == "" || tc.Description == "" || tc.Level == "" || tc.Feature == "" || tc.Ref == "" || tc.Run == nil {
+		panic(fmt.Sprintf("suite.Register: incomplete test case %+v", tc))
+	}
 	mu.Lock()
 	defer mu.Unlock()
+	for _, existing := range registry {
+		if existing.ID == tc.ID {
+			panic(fmt.Sprintf("suite.Register: duplicate test ID %q", tc.ID))
+		}
+	}
 	registry = append(registry, tc)
 }
 
-// All returns a snapshot of all registered test cases.
+// All returns a snapshot of all registered test cases in registration order.
 func All() []TestCase {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -74,16 +105,41 @@ func All() []TestCase {
 	return out
 }
 
-// Lookup returns the test case with the given name, or an error if not found.
-func Lookup(name string) (TestCase, error) {
-	mu.RLock()
-	defer mu.RUnlock()
-	for _, tc := range registry {
-		if tc.Name == name {
-			return tc, nil
+// Select returns the test cases matching any of the selectors, in
+// registration order. A selector matches an ID exactly, the ID's sub-results
+// ("XV-8" matches "XV-8/server"), or a whole group ("XV" matches "XV-8/server"
+// but "XV-1" does not match "XV-10"). An empty selector list selects all.
+// Selectors that match nothing are an error.
+func Select(selectors []string) ([]TestCase, error) {
+	all := All()
+	if len(selectors) == 0 {
+		return all, nil
+	}
+	used := map[string]bool{}
+	var out []TestCase
+	for _, tc := range all {
+		for _, sel := range selectors {
+			if matches(tc.ID, sel) {
+				out = append(out, tc)
+				used[sel] = true
+				break
+			}
 		}
 	}
-	return TestCase{}, fmt.Errorf("test case %q not found", name)
+	var unknown []string
+	for _, sel := range selectors {
+		if !used[sel] {
+			unknown = append(unknown, sel)
+		}
+	}
+	if len(unknown) > 0 {
+		return nil, fmt.Errorf("no test case matches: %s", strings.Join(unknown, ","))
+	}
+	return out, nil
+}
+
+func matches(id, sel string) bool {
+	return id == sel || strings.HasPrefix(id, sel+"/") || strings.HasPrefix(id, sel+"-")
 }
 
 // RunnerConfig holds the parameters needed to run test cases.
@@ -92,31 +148,49 @@ type RunnerConfig struct {
 	Cmd string
 	// Args are the arguments to pass to the harness.
 	Args []string
+	// Parallel is the number of test cases run concurrently (default 1).
+	Parallel int
 
 	StOut io.Writer
 	StErr io.Writer
 }
 
-// RunAll runs every registered test case and returns a Report.
-func RunAll(ctx context.Context, cfg RunnerConfig) result.Report {
-	var report result.Report
-	for _, tc := range All() {
-		report.Add(runOne(ctx, tc, cfg))
+// Run executes cases and returns their results in the same order.
+func Run(ctx context.Context, cases []TestCase, cfg RunnerConfig) []result.Result {
+	results := make([]result.Result, len(cases))
+	workers := cfg.Parallel
+	if workers < 1 {
+		workers = 1
 	}
-	return report
-}
-
-// RunOne runs the single named test case.
-func RunOne(ctx context.Context, name string, cfg RunnerConfig) (result.Result, error) {
-	tc, err := Lookup(name)
-	if err != nil {
-		return result.Result{}, err
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				results[i] = runOne(ctx, cases[i], cfg)
+			}
+		}()
 	}
-	return runOne(ctx, tc, cfg), nil
+	for i := range cases {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	return results
 }
 
 func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) result.Result {
-	res, env := runCase(ctx, tc, cfg)
+	res := result.Result{
+		Name:        tc.ID,
+		Description: tc.Description,
+		Level:       tc.Level,
+		Feature:     tc.Feature,
+		Ref:         tc.Ref,
+	}
+	status, msg, env := execute(ctx, tc, cfg)
+	res.Status, res.Message = status, msg
 	if env != nil {
 		for _, c := range env.Server().Calls() {
 			if c.Method == workloadapi.MethodValidateJWTSVID {
@@ -128,88 +202,30 @@ func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) result.Result {
 	return res
 }
 
-func runCase(ctx context.Context, tc TestCase, cfg RunnerConfig) (res result.Result, env *TestEnv) {
-	env, cleanup, err := newTestEnv(ctx, cfg.Cmd, cfg.Args, cfg.StOut, cfg.StErr)
+func execute(ctx context.Context, tc TestCase, cfg RunnerConfig) (status result.Status, msg string, env *TestEnv) {
+	env, err := newTestEnv(ctx, cfg, tc.Options)
 	if err != nil {
-		return result.Result{
-			Name:        tc.Name,
-			Description: tc.Description,
-			Status:      result.StatusError,
-			Message:     fmt.Sprintf("setup: %v", err),
-		}, nil
+		return result.StatusError, fmt.Sprintf("setup: %v", err), nil
 	}
-	defer cleanup()
+	defer env.close()
 
 	defer func() {
 		if p := recover(); p != nil {
-			res = result.Result{
-				Name:        tc.Name,
-				Description: tc.Description,
-				Status:      result.StatusError,
-				Message:     fmt.Sprintf("test panicked: %v", p),
-			}
-			env = nil
+			status, msg = result.StatusError, fmt.Sprintf("test panicked: %v", p)
 		}
 	}()
 
 	runErr := tc.Run(ctx, env)
 	var execErr *ExecutionError
 	var skipErr *SkipError
-	if errors.As(runErr, &skipErr) {
-		return result.Result{
-			Name:        tc.Name,
-			Description: tc.Description,
-			Status:      result.StatusSkip,
-			Message:     skipErr.Reason,
-		}, env
-	}
-	if errors.As(runErr, &execErr) {
-		return result.Result{
-			Name:        tc.Name,
-			Description: tc.Description,
-			Status:      result.StatusError,
-			Message:     runErr.Error(),
-		}, env
-	}
-	if runErr != nil {
-		return result.Result{
-			Name:        tc.Name,
-			Description: tc.Description,
-			Status:      result.StatusFail,
-			Message:     runErr.Error(),
-		}, env
-	}
-	return result.Result{
-		Name:        tc.Name,
-		Description: tc.Description,
-		Status:      result.StatusPass,
-	}, env
-}
-
-// BridgeToGoTest bridges a single named test case into the standard Go test
-// framework. It reads SUITE_CMD and SUITE_ARGS environment variables; if
-// SUITE_CMD is unset, the test is skipped.
-func BridgeToGoTest(t *testing.T, name string) {
-	t.Helper()
-
-	cmd := os.Getenv("SUITE_CMD")
-	if cmd == "" {
-		t.Skipf("SUITE_CMD not set; skipping %s", name)
-		return
-	}
-	args := strings.Fields(os.Getenv("SUITE_ARGS"))
-
-	cfg := RunnerConfig{Cmd: cmd, Args: args}
-	res, err := RunOne(t.Context(), name, cfg)
-	if err != nil {
-		t.Fatalf("test case %q not registered: %v", name, err)
-	}
-	switch res.Status {
-	case result.StatusPass:
-		// nothing
-	case result.StatusSkip:
-		t.Skip(res.Message)
+	switch {
+	case runErr == nil:
+		return result.StatusPass, "", env
+	case errors.As(runErr, &skipErr):
+		return result.StatusSkip, skipErr.Reason, env
+	case errors.As(runErr, &execErr):
+		return result.StatusError, runErr.Error(), env
 	default:
-		t.Errorf("[%s] %s: %s", res.Status, res.Name, res.Message)
+		return result.StatusFail, runErr.Error(), env
 	}
 }

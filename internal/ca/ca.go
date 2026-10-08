@@ -241,9 +241,14 @@ func (c *CA) IssueX509SVID(spiffeID string, opts ...X509SVIDOption) (*X509SVIDMa
 		keyUsage = *cfg.keyUsage
 	}
 
+	subject := pkix.Name{CommonName: spiffeID}
+	if cfg.emptySubject {
+		subject = pkix.Name{}
+	}
+
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: spiffeID},
+		Subject:      subject,
 		URIs:         uris,
 		DNSNames:     cfg.dnsNames,
 		NotBefore:    cfg.notBefore,
@@ -353,10 +358,17 @@ func (c *CA) IssueJWT(spiffeID string, opts ...JWTSVIDOption) (*JWTSVIDMaterial,
 // JWKSBytes returns the CA's JWT bundle as a JWK Set. Each key carries its kid
 // and its use (normally "jwt-svid", JWT-SVID §6.1).
 func (c *CA) JWKSBytes() ([]byte, error) {
+	return BuildJWKS(c.jwtKeys)
+}
+
+// BuildJWKS returns a JWK Set containing keys, followed by extra raw JWK
+// entries (e.g. entries with an unknown "kty"). With no keys and no extras it
+// returns a set with an empty "keys" array.
+func BuildJWKS(keys []*JWTKey, extra ...json.RawMessage) ([]byte, error) {
 	set := struct {
 		Keys []json.RawMessage `json:"keys"`
 	}{Keys: []json.RawMessage{}}
-	for _, k := range c.jwtKeys {
+	for _, k := range keys {
 		b, err := json.Marshal(jose.JSONWebKey{Key: k.Signer.Public(), KeyID: k.ID})
 		if err != nil {
 			return nil, fmt.Errorf("marshal JWK %s: %w", k.ID, err)
@@ -374,7 +386,54 @@ func (c *CA) JWKSBytes() ([]byte, error) {
 		}
 		set.Keys = append(set.Keys, b)
 	}
+	set.Keys = append(set.Keys, extra...)
 	return json.Marshal(set)
+}
+
+// ValidJWTClaims returns the claims of a valid JWT-SVID for sub and aud,
+// expiring in five minutes.
+func ValidJWTClaims(sub string, aud ...string) map[string]any {
+	now := time.Now()
+	return map[string]any{
+		"sub": sub,
+		"aud": aud,
+		"iat": now.Unix(),
+		"exp": now.Add(5 * time.Minute).Unix(),
+	}
+}
+
+// SignRawJWT builds a compact JWS signed by key using key's own algorithm.
+// The header defaults to {"alg": key.Alg, "kid": key.ID, "typ": "JWT"};
+// entries in header override the defaults, and a nil value removes the entry.
+// Overriding "alg" changes only the header, not how the token is signed,
+// which allows algorithm-confusion tokens. Claims are encoded as given.
+func SignRawJWT(key *JWTKey, header map[string]any, claims map[string]any) (string, error) {
+	h := map[string]any{"alg": key.Alg, "kid": key.ID, "typ": "JWT"}
+	for k, v := range header {
+		if v == nil {
+			delete(h, k)
+		} else {
+			h[k] = v
+		}
+	}
+	hb, err := json.Marshal(h)
+	if err != nil {
+		return "", fmt.Errorf("marshal header: %w", err)
+	}
+	cb, err := json.Marshal(claims)
+	if err != nil {
+		return "", fmt.Errorf("marshal claims: %w", err)
+	}
+	signingInput := base64.RawURLEncoding.EncodeToString(hb) + "." + base64.RawURLEncoding.EncodeToString(cb)
+	method := jwt.GetSigningMethod(key.Alg)
+	if method == nil {
+		return "", fmt.Errorf("unsupported JWT algorithm %q", key.Alg)
+	}
+	sig, err := method.Sign(signingInput, key.Signer)
+	if err != nil {
+		return "", fmt.Errorf("sign: %w", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
 func generateJWTSigner(alg string) (crypto.Signer, error) {
