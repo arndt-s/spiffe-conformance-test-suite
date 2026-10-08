@@ -242,16 +242,17 @@ func (c *CA) IssueX509SVID(spiffeID string, opts ...X509SVIDOption) (*X509SVIDMa
 	}
 
 	tmpl := &x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: spiffeID},
-		URIs:                  uris,
-		DNSNames:              cfg.dnsNames,
-		NotBefore:             cfg.notBefore,
-		NotAfter:              cfg.notBefore.Add(cfg.ttl),
-		KeyUsage:              keyUsage,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		IsCA:                  cfg.isCA,
-		BasicConstraintsValid: cfg.isCA,
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: spiffeID},
+		URIs:         uris,
+		DNSNames:     cfg.dnsNames,
+		NotBefore:    cfg.notBefore,
+		NotAfter:     cfg.notBefore.Add(cfg.ttl),
+		KeyUsage:     keyUsage,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		IsCA:         cfg.isCA,
+		// X509-SVID §4.1: leaves MUST carry basic constraints with cA=false.
+		BasicConstraintsValid: true,
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, &leafKey.PublicKey, c.key)

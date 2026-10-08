@@ -16,10 +16,11 @@ Each test case runs in complete isolation with its own subprocess, UDS socket, a
 
 ## SDK Requirements
 
-> The harness protocol and the test catalogue are being reworked. See
-> [docs/HARNESS_CONTRACT.md](docs/HARNESS_CONTRACT.md) (v1 draft) and
-> [docs/TEST_CATALOGUE.md](docs/TEST_CATALOGUE.md). The rest of this section
-> describes the v0 protocol the suite currently speaks.
+> **New harnesses should implement contract v1:
+> [docs/HARNESS_CONTRACT.md](docs/HARNESS_CONTRACT.md).** `sdks/go-spiffe` is the
+> reference implementation. The rest of this section describes the deprecated v0
+> protocol, which the suite still accepts. The planned test set is in
+> [docs/TEST_CATALOGUE.md](docs/TEST_CATALOGUE.md).
 
 To be compatible with this conformance test suite, SDKs must implement the following behavior:
 

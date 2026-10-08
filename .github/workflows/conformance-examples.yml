@@ -1,66 +1,153 @@
 name: Conformance examples
 
+# Runs the suite against every SDK harness in sdks/. A job fails only if test
+# cases could not be executed; SDK test failures are reported in the job
+# summary and the uploaded results, not as job failures.
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
 
+env:
+  SUITE_VERSION: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   go-spiffe:
-    name: go-spiffe
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-
       - name: Build harness
         run: go build -o sdks/go-spiffe/go-spiffe ./sdks/go-spiffe
-
-      - name: Run conformance suite
-        uses: ./
+      - uses: ./
         with:
           cmd: ./sdks/go-spiffe/go-spiffe
-          output: json
-          results-file: go-spiffe-results.json
-          suite-version: ${{ github.event.pull_request.head.sha || github.sha }}
-
+          results-file: results.json
+          suite-version: ${{ env.SUITE_VERSION }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: go-spiffe-results
-          path: go-spiffe-results.json
+          name: results-go-spiffe
+          path: results.json
 
-  defakto-spiffe-ts:
-    name: defakto-spiffe-ts
+  java-spiffe:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-java@v4
         with:
-          node-version: '20'
-
-      - name: Install and build harness
-        working-directory: sdks/defakto-spiffe-ts
-        run: |
-          npm install
-          npm run build
-
-      - name: Run conformance suite
-        uses: ./
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build harness
+        run: mvn -B -q -f sdks/java-spiffe/pom.xml package
+      - uses: ./
         with:
-          cmd: node
-          args: sdks/defakto-spiffe-ts/dist/index.js
-          output: json
-          results-file: defakto-spiffe-ts-results.json
-          suite-version: ${{ github.event.pull_request.head.sha || github.sha }}
-
+          cmd: java
+          args: -jar,sdks/java-spiffe/target/harness.jar
+          results-file: results.json
+          suite-version: ${{ env.SUITE_VERSION }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: defakto-spiffe-ts-results
-          path: defakto-spiffe-ts-results.json
+          name: results-java-spiffe
+          path: results.json
+
+  py-spiffe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install harness
+        run: |
+          python -m venv sdks/py-spiffe/.venv
+          sdks/py-spiffe/.venv/bin/pip install -r sdks/py-spiffe/requirements.txt
+      - uses: ./
+        with:
+          cmd: sdks/py-spiffe/.venv/bin/python
+          args: sdks/py-spiffe/harness.py
+          results-file: results.json
+          suite-version: ${{ env.SUITE_VERSION }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-py-spiffe
+          path: results.json
+
+  spiffe-defakto-py:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install harness
+        run: |
+          python -m venv sdks/spiffe-defakto-py/.venv
+          sdks/spiffe-defakto-py/.venv/bin/pip install -r sdks/spiffe-defakto-py/requirements.txt
+      - uses: ./
+        with:
+          cmd: sdks/spiffe-defakto-py/.venv/bin/python
+          args: sdks/spiffe-defakto-py/harness.py
+          results-file: results.json
+          suite-version: ${{ env.SUITE_VERSION }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-spiffe-defakto-py
+          path: results.json
+
+  rust-spiffe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build harness
+        run: cargo build --release --locked --manifest-path sdks/rust-spiffe/Cargo.toml
+      - uses: ./
+        with:
+          cmd: sdks/rust-spiffe/target/release/rust-spiffe-harness
+          results-file: results.json
+          suite-version: ${{ env.SUITE_VERSION }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-rust-spiffe
+          path: results.json
+
+  node:
+    name: ${{ matrix.sdk }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [defakto-spiffe-ts, node-spiffe, jeengbe-spiffe]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build harness
+        run: |
+          npm ci --prefix sdks/${{ matrix.sdk }}
+          npm run build --prefix sdks/${{ matrix.sdk }}
+      - uses: ./
+        with:
+          cmd: node
+          args: sdks/${{ matrix.sdk }}/dist/index.js
+          results-file: results.json
+          suite-version: ${{ env.SUITE_VERSION }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.sdk }}
+          path: results.json

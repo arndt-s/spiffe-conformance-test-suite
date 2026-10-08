@@ -8,10 +8,19 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
-const defaultReadinessTimeout = 5 * time.Minute
+const (
+	// DefaultReadinessTimeout is how long Start waits for READY.
+	DefaultReadinessTimeout = 10 * time.Second
+	// stopGrace is how long Stop waits after SIGTERM before SIGKILL.
+	stopGrace = 5 * time.Second
+	// stderrTailBytes is how much of the harness's stderr is kept for reports.
+	stderrTailBytes = 4096
+)
 
 // Config holds the parameters for spawning the SDK harness.
 type Config struct {
@@ -19,158 +28,168 @@ type Config struct {
 	Cmd string
 	// Args are the command-line arguments.
 	Args []string
-	// SocketPath is the UDS path set via SPIFFE_ENDPOINT_SOCKET.
-	SocketPath string
-	// ReadinessTimeout overrides the default 10 s readiness timeout.
+	// Endpoint is the value of SPIFFE_ENDPOINT_SOCKET, e.g. "unix:///tmp/x/api.sock".
+	Endpoint string
+	// ReadinessTimeout overrides DefaultReadinessTimeout.
 	ReadinessTimeout time.Duration
 	// ExtraEnv is additional environment variables beyond the inherited set.
 	ExtraEnv []string
 
-	// StdOut and StdErr are optional writers for the subprocess's stdout and stderr.
+	// StdOut and StdErr optionally receive a copy of the subprocess's output.
 	StdOut io.Writer
 	StdErr io.Writer
 }
 
 // RunningProcess represents a spawned SDK harness process.
 type RunningProcess struct {
-	cmd        *exec.Cmd
-	Readiness  Readiness
-	cancelFunc context.CancelFunc
+	cmd       *exec.Cmd
+	Readiness Readiness
+	stderr    *tailBuffer
+	done      chan struct{}
+	stopOnce  sync.Once
 }
 
-// Start spawns the harness subprocess and waits until it signals readiness.
-// ctx is the parent context; Start creates a child context with timeout for
-// readiness detection only — the subprocess continues to run after Start returns.
+// Start spawns the harness in its own process group and waits until it signals
+// readiness. On failure the process is stopped and the error includes the tail
+// of its stderr.
 func Start(ctx context.Context, cfg Config) (*RunningProcess, error) {
 	timeout := cfg.ReadinessTimeout
 	if timeout == 0 {
-		timeout = defaultReadinessTimeout
+		timeout = DefaultReadinessTimeout
 	}
 
-	readinessCtx, cancel := context.WithTimeout(ctx, timeout)
-
-	procCtx, procCancel := context.WithCancel(ctx)
-
-	cmd := exec.CommandContext(procCtx, cfg.Cmd, cfg.Args...)
+	cmd := exec.Command(cfg.Cmd, cfg.Args...)
 	cmd.Env = buildEnv(cfg)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		cancel()
-		procCancel()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
-
-	// Set stderr to the configured writer, or discard if nil.
+	tail := &tailBuffer{max: stderrTailBytes}
 	if cfg.StdErr != nil {
-		cmd.Stderr = cfg.StdErr
+		cmd.Stderr = io.MultiWriter(tail, cfg.StdErr)
 	} else {
-		cmd.Stderr = io.Discard
+		cmd.Stderr = tail
 	}
 
 	if err := cmd.Start(); err != nil {
-		cancel()
-		procCancel()
 		return nil, fmt.Errorf("start process: %w", err)
 	}
 
-	rp := &RunningProcess{
-		cmd:        cmd,
-		cancelFunc: procCancel,
-	}
+	rp := &RunningProcess{cmd: cmd, stderr: tail, done: make(chan struct{})}
+	go func() {
+		_ = cmd.Wait()
+		close(rp.done)
+	}()
 
-	// Read readiness in a goroutine so we can respect the timeout.
 	type result struct {
 		r   Readiness
 		err error
 	}
 	ch := make(chan result, 1)
-
 	go func() {
-		var r Readiness
-
-		// Create a TeeReader if StdOut is configured, so we can parse readiness
-		// while also writing to the configured writer
 		reader := io.Reader(stdoutPipe)
 		if cfg.StdOut != nil {
 			reader = io.TeeReader(stdoutPipe, cfg.StdOut)
 		}
-
+		var r Readiness
 		err := parseStdout(reader, &r)
 		ch <- result{r, err}
-
-		// Drain remaining stdout to prevent pipe buffer filling
-		if cfg.StdOut != nil {
-			_, _ = io.Copy(cfg.StdOut, stdoutPipe)
-		} else {
-			_, _ = io.Copy(io.Discard, stdoutPipe)
-		}
+		// Keep draining so the harness never blocks on a full pipe.
+		_, _ = io.Copy(io.Discard, reader)
 	}()
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
-	case <-readinessCtx.Done():
-		cancel()
-		_ = cmd.Process.Kill()
-		procCancel()
-		return nil, fmt.Errorf("readiness timeout after %s", timeout)
 	case res := <-ch:
-		cancel()
 		if res.err != nil {
-			procCancel()
-			return nil, fmt.Errorf("readiness parse: %w", res.err)
+			rp.Stop()
+			return nil, rp.withStderr(fmt.Errorf("readiness: %w", res.err))
 		}
 		rp.Readiness = res.r
 		return rp, nil
+	case <-timer.C:
+		rp.Stop()
+		return nil, rp.withStderr(fmt.Errorf("no READY within %s", timeout))
+	case <-ctx.Done():
+		rp.Stop()
+		return nil, ctx.Err()
 	}
 }
 
-// Stop terminates the subprocess and waits for it to exit.
-func (rp *RunningProcess) Stop() error {
-	rp.cancelFunc()
-	return rp.cmd.Wait()
+// Stop sends SIGTERM to the harness's process group, waits up to stopGrace,
+// then sends SIGKILL. It is safe to call more than once.
+func (rp *RunningProcess) Stop() {
+	rp.stopOnce.Do(func() {
+		pgid := -rp.cmd.Process.Pid
+		_ = syscall.Kill(pgid, syscall.SIGTERM)
+		select {
+		case <-rp.done:
+		case <-time.After(stopGrace):
+		}
+		// Kill whatever is left of the group, including orphaned children.
+		_ = syscall.Kill(pgid, syscall.SIGKILL)
+		<-rp.done
+	})
 }
+
+// StderrTail returns the last few KiB the harness wrote to stderr.
+func (rp *RunningProcess) StderrTail() string { return rp.stderr.String() }
+
+func (rp *RunningProcess) withStderr(err error) error {
+	tail := strings.TrimSpace(rp.StderrTail())
+	if tail == "" {
+		return err
+	}
+	return fmt.Errorf("%w\n--- harness stderr (tail) ---\n%s", err, tail)
+}
+
+// Version returns the harness contract version.
+func (rp *RunningProcess) Version() int { return rp.Readiness.Version }
 
 // X509Port returns the port on which the harness serves X.509 SVIDs.
 func (rp *RunningProcess) X509Port() int { return rp.Readiness.X509Port }
 
-// JWTPort returns the port on which the harness serves JWT SVIDs.
+// JWTPort returns the v0 JWT validation port.
 func (rp *RunningProcess) JWTPort() int { return rp.Readiness.JWTPort }
 
+// ControlPort returns the v1 control port.
+func (rp *RunningProcess) ControlPort() int { return rp.Readiness.ControlPort }
+
 func buildEnv(cfg Config) []string {
-	env := os.Environ()
-	env = append(env, fmt.Sprintf("SPIFFE_ENDPOINT_SOCKET=unix://%s", cfg.SocketPath))
-	env = append(env, cfg.ExtraEnv...)
-	return filterDuplicates(env)
+	env := make([]string, 0, len(os.Environ())+len(cfg.ExtraEnv)+1)
+	for _, e := range os.Environ() {
+		// The harness must discover the endpoint only from what the suite sets.
+		if strings.HasPrefix(e, "SPIFFE_ENDPOINT_SOCKET=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	env = append(env, "SPIFFE_ENDPOINT_SOCKET="+cfg.Endpoint)
+	return append(env, cfg.ExtraEnv...)
 }
 
-// filterDuplicates keeps the last occurrence of each KEY= entry.
-func filterDuplicates(env []string) []string {
-	seen := make(map[string]int, len(env))
-	for i, e := range env {
-		k := e
-		if idx := strings.IndexByte(e, '='); idx >= 0 {
-			k = e[:idx]
-		}
-		seen[k] = i
-	}
-	out := make([]string, 0, len(seen))
-	for _, e := range env {
-		k := e
-		if idx := strings.IndexByte(e, '='); idx >= 0 {
-			k = e[:idx]
-		}
-		if seen[k] == indexOf(env, e) {
-			out = append(out, e)
-		}
-	}
-	return out
+// tailBuffer keeps the last max bytes written to it.
+type tailBuffer struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
 }
 
-func indexOf(env []string, e string) int {
-	for i := len(env) - 1; i >= 0; i-- {
-		if env[i] == e {
-			return i
-		}
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.max {
+		t.buf = t.buf[len(t.buf)-t.max:]
 	}
-	return -1
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.buf)
 }

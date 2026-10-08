@@ -160,3 +160,20 @@ func TestCACertCarriesTrustDomainURI(t *testing.T) {
 		t.Fatalf("CA URIs = %v, want [%s]", cert.URIs, td)
 	}
 }
+
+func TestLeafCarriesBasicConstraintsWithCAFalse(t *testing.T) {
+	c, err := New(td)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := c.IssueX509SVID(td + "/workload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Cert.BasicConstraintsValid || m.Cert.IsCA {
+		t.Fatalf("BasicConstraintsValid=%v IsCA=%v, want true/false", m.Cert.BasicConstraintsValid, m.Cert.IsCA)
+	}
+	if m.Cert.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		t.Fatal("leaf lacks digitalSignature")
+	}
+}

@@ -1,8 +1,10 @@
 # SDK Harness Contract — v1 (draft)
 
-> **Status: Draft.** The suite currently speaks the v0 protocol described in the
-> README (`SPIFFE_JWT_PORT` / `SPIFFE_X509_PORT` / `READY`). v1 replaces it before
-> the first tagged release; v0 support will be removed at that point.
+> **Status: Draft, implemented.** The suite speaks v1. It still accepts v0
+> harnesses (no `SPIFFE_HARNESS_VERSION` line, `SPIFFE_JWT_PORT`) so that existing
+> harnesses keep working, but tests that need v1 endpoints are reported as `SKIP`
+> for them. v0 support will be removed before the first tagged release.
+> `sdks/go-spiffe` is the reference v1 harness.
 
 A *harness* is a small program, written once per SDK, that exposes the SDK's
 behaviour to the suite over the network. The suite never links against an SDK; it
@@ -20,7 +22,11 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 2. **Authorization is out of scope.** Wherever the harness authenticates a peer it
    MUST authorize *any* SPIFFE ID (e.g. go-spiffe `tlsconfig.AuthorizeAny()`).
    The suite tests authentication; authorization policy is application code.
-3. **Unsupported means unsupported.** If the SDK cannot perform an operation, the
+3. **Stream handling is the SDK's job.** Reconnecting, retrying after errors and
+   re-subscribing are behaviours the suite tests (`EP`, `WA`). The harness MUST
+   NOT add them. If the SDK's watch or stream ends and the SDK does not recover,
+   the harness keeps serving whatever the SDK last provided.
+4. **Unsupported means unsupported.** If the SDK cannot perform an operation, the
    harness MUST answer `501 Not Implemented` (see §5). The suite reports the
    affected tests as `SKIP`, never as `PASS`.
 
@@ -88,6 +94,16 @@ A TLS server (TLS 1.2 or 1.3; 1.3 recommended) that:
    then closes the connection.
 4. on authentication failure, aborts the handshake (TLS alert) or closes the
    connection without writing anything.
+
+The line MUST be the client's SPIFFE ID as extracted by the SDK. An empty line
+is treated as a rejection.
+
+**SDKs without peer authentication.** If the SDK offers no way to authenticate
+peer X.509-SVIDs, the harness MUST NOT substitute another mechanism (e.g. plain
+OpenSSL/Node chain verification against the bundle). Instead it serves the
+SDK's SVID without requesting a client certificate and writes `-\n` after every
+handshake. The suite then reports peer-authentication tests as `SKIP`, while
+tests of the presented SVID still run.
 
 The suite reads the line to tell an accepted client from a rejected one.
 Rejection is otherwise invisible under TLS 1.3, where the client's handshake

@@ -76,7 +76,7 @@ func TestProbeX509DetectsRejectionAfterHandshake(t *testing.T) {
 			// The server only trusts a different CA, so it rejects our client.
 			port := serve(t, serverCert, other.CACertPool(), v.version, func(*tls.Conn) {})
 
-			if _, err := ProbeX509(port, clientCert, authority.CACertPool()); err == nil {
+			if _, err := ProbeX509(port, clientCert, authority.CACertPool(), false); err == nil {
 				t.Fatal("ProbeX509 reported acceptance for a rejected client certificate")
 			}
 		})
@@ -90,7 +90,7 @@ func TestProbeX509ReadsPeerLine(t *testing.T) {
 		_, _ = c.Write([]byte(id + "\n"))
 	})
 
-	res, err := ProbeX509(port, clientCert, authority.CACertPool())
+	res, err := ProbeX509(port, clientCert, authority.CACertPool(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestProbeX509AcceptsServerHoldingConnectionOpen(t *testing.T) {
 		_, _ = c.Read(make([]byte, 1)) // v0 harness behaviour
 	})
 
-	res, err := ProbeX509(port, clientCert, authority.CACertPool())
+	res, err := ProbeX509(port, clientCert, authority.CACertPool(), false)
 	if err != nil {
 		t.Fatalf("v0-style server treated as rejection: %v", err)
 	}
@@ -124,8 +124,27 @@ func TestProbeX509RejectsUntrustedServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = ProbeX509(port, clientCert, other.CACertPool())
+	_, err = ProbeX509(port, clientCert, other.CACertPool(), false)
 	if err == nil || !strings.Contains(err.Error(), "TLS dial") {
 		t.Fatalf("got %v, want a TLS dial verification error", err)
+	}
+}
+
+func TestProbeX509V1RequiresPeerLine(t *testing.T) {
+	authority, serverCert, clientCert := fixtures(t)
+	silent := serve(t, serverCert, authority.CACertPool(), tls.VersionTLS13, func(*tls.Conn) {})
+	if _, err := ProbeX509(silent, clientCert, authority.CACertPool(), true); err == nil {
+		t.Fatal("v1 server that closed without a peer-ID line was treated as accepting")
+	}
+
+	writes := serve(t, serverCert, authority.CACertPool(), tls.VersionTLS13, func(c *tls.Conn) {
+		_, _ = c.Write([]byte(td + "/client\n"))
+	})
+	res, err := ProbeX509(writes, clientCert, authority.CACertPool(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PeerLine != td+"/client" {
+		t.Fatalf("PeerLine = %q", res.PeerLine)
 	}
 }

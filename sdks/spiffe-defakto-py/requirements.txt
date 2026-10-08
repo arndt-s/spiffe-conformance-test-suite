@@ -1,0 +1,4 @@
+spiffe-defakto==1.1.0
+# TLS plumbing only: lets the server request a client certificate and hand
+# the chain to the SDK for verification (stdlib ssl cannot defer verification).
+pyOpenSSL==26.4.0

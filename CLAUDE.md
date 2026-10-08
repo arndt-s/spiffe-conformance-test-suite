@@ -24,36 +24,31 @@ go vet ./...            # static analysis
 The suite drives each test case by:
 1. Creating a fresh UDS path under a temp directory
 2. Spawning `<cmd> <args>` with `SPIFFE_ENDPOINT_SOCKET=unix://<tmp-socket-path>`
-3. Reading stdout until it sees `SPIFFE_JWT_PORT=<port>`, `SPIFFE_X509_PORT=<port>`, and `READY`
+3. Reading stdout until `READY` (contract v1: `SPIFFE_HARNESS_VERSION=1`, `SPIFFE_X509_PORT`, `SPIFFE_CONTROL_PORT`; deprecated v0: `SPIFFE_X509_PORT`, `SPIFFE_JWT_PORT`)
 4. Running the test case (probing the SDK's exposed ports)
 5. Terminating the subprocess and cleaning up
 
 ### Key Components
 
 - **Mock Workload API server** — gRPC server over UDS implementing the SPIFFE Workload API; issues X.509 and JWT SVIDs under full test control
-- **Test harness runner** — subprocess lifecycle management, stdout parsing, readiness detection (10s default timeout)
+- **Test harness runner** — subprocess lifecycle (own process group, SIGTERM then SIGKILL), stdout parsing, readiness detection (10s default timeout), stderr tail in errors
 - **X.509 TLS prober** — dials the SDK's X.509 port via mTLS and inspects the presented certificate chain
-- **JWT HTTP prober** — HTTP client to the SDK's JWT port; inspects returned token claims and signature
+- **Control-port client** — HTTP client for the harness's v1 control endpoints (JWT validate/fetch, X.509 dial)
 - **CA / key factory** — generates ephemeral trust domains, CA certs, and leaf SVIDs per test case
 
 ### Isolation Model
 
 Each test case gets a fresh subprocess and UDS socket. No state is shared between test cases.
 
-### SDK Harness Contract (stdout protocol)
+### SDK Harness Contract
 
-```
-SPIFFE_JWT_PORT=<os-assigned-port>
-SPIFFE_X509_PORT=<os-assigned-port>
-READY
-```
+Defined in `docs/HARNESS_CONTRACT.md` (v1). Harnesses live in `sdks/<name>/`; `sdks/go-spiffe` is the reference. Test cases and their spec references are defined in `docs/TEST_CATALOGUE.md`.
 
-Lines may appear in any order; `READY` must be last. The harness must have connected to the UDS before writing `READY`.
+Test results (PASS/FAIL/SKIP) never fail a run; only ERROR (test could not be executed) does. Tests return `suite.ExecErrorf` for setup problems and `suite.Skipf` when the harness lacks a capability.
 
-### MVP Test Cases
+### Test Cases
 
-- **X1–X5**: X.509 SVID issuance, cert validity, trust bundle, SVID rotation, bundle-before-SVID rotation
-- **J1–J5**: JWT SVID issuance, algorithm conformance, audience matching, expiry handling, bundle consistency
+Currently registered: X1–X13 and J1–J13 (legacy IDs, mapped to catalogue IDs in `docs/TEST_CATALOGUE.md` §9), plus catalogue tests JF-1 and XV-1/client. New tests use catalogue IDs.
 
 ### CLI
 

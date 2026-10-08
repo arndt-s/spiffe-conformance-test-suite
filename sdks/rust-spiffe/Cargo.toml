@@ -1,0 +1,28 @@
+[package]
+name = "rust-spiffe-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "SPIFFE conformance test suite harness (contract v1) for rust-spiffe"
+
+# Standalone crate: not a member of any enclosing workspace.
+[workspace]
+
+[[bin]]
+name = "rust-spiffe-harness"
+path = "src/main.rs"
+
+[dependencies]
+spiffe = { version = "=0.18.0", features = ["x509-source", "jwt-source", "workload-api", "jwt-verify-rust-crypto", "logging"] }
+spiffe-rustls = { version = "=0.10.0", features = ["logging"] }
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+tokio-rustls = { version = "0.26", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+debug = false
