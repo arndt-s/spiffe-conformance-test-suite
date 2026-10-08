@@ -15,7 +15,7 @@ func printText(w io.Writer, report result.Report) {
 		if r.Delegated {
 			note = " [delegated]"
 		}
-		fmt.Fprintf(w, "[%-5s] %-14s %-6s %s (%s)%s\n", r.Status, r.Name, r.Level, r.Description, r.Ref, note)
+		fmt.Fprintf(w, "[%-5s] %-22s %-6s %s (%s)%s\n", r.Status, r.Name, r.Level, r.Description, r.Ref, note)
 		if r.Message != "" {
 			fmt.Fprintf(w, "        %s\n", r.Message)
 		}
