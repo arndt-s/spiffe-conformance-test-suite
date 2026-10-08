@@ -124,7 +124,10 @@ Plain HTTP/1.1 on `127.0.0.1`. Requests and responses are JSON
 | 501 | `"unsupported"` | The SDK does not support this operation. |
 
 Every response body carries `status` and MAY carry `message` (free text, shown in
-reports). Negative test cases pass **only** on `rejected`; an `error` is reported
+reports). If the SDK fails while processing the input it was given (for example
+it throws an unexpected exception on a malformed token), that is a rejection
+(`422`); mention the exception in `message`. `error` is only for failures to
+carry out the operation at all. Negative test cases pass **only** on `rejected`; an `error` is reported
 as `ERROR`, so a broken harness can't pass negative tests.
 
 ### 4.2 `POST /v1/jwt/validate`
