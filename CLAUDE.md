@@ -23,7 +23,7 @@ go vet ./...            # static analysis
 
 The suite drives each test case by:
 1. Creating a fresh UDS path under a temp directory
-2. Spawning `<cmd> <args>` with `SPIFFE_WORKLOAD_ENDPOINT=unix://<tmp-socket-path>`
+2. Spawning `<cmd> <args>` with `SPIFFE_ENDPOINT_SOCKET=unix://<tmp-socket-path>`
 3. Reading stdout until it sees `SPIFFE_JWT_PORT=<port>`, `SPIFFE_X509_PORT=<port>`, and `READY`
 4. Running the test case (probing the SDK's exposed ports)
 5. Terminating the subprocess and cleaning up

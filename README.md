@@ -7,7 +7,7 @@ A black-box test suite for validating SPIFFE Workload API SDK implementations. T
 The test suite validates SDK implementations by:
 
 1. Creating a fresh Unix Domain Socket (UDS) under a temporary directory
-2. Spawning the SDK under test with `SPIFFE_WORKLOAD_ENDPOINT=unix://<tmp-socket-path>`
+2. Spawning the SDK under test with `SPIFFE_ENDPOINT_SOCKET=unix://<tmp-socket-path>`
 3. Waiting for the SDK to signal readiness via stdout
 4. Running test cases that probe the SDK's behavior
 5. Terminating the subprocess and cleaning up
@@ -16,13 +16,18 @@ Each test case runs in complete isolation with its own subprocess, UDS socket, a
 
 ## SDK Requirements
 
+> The harness protocol and the test catalogue are being reworked. See
+> [docs/HARNESS_CONTRACT.md](docs/HARNESS_CONTRACT.md) (v1 draft) and
+> [docs/TEST_CATALOGUE.md](docs/TEST_CATALOGUE.md). The rest of this section
+> describes the v0 protocol the suite currently speaks.
+
 To be compatible with this conformance test suite, SDKs must implement the following behavior:
 
 ### Initialization
 
 Upon invocation, the SDK must:
 
-1. **Read the Workload API endpoint** from the `SPIFFE_WORKLOAD_ENDPOINT` environment variable
+1. **Read the Workload API endpoint** from the `SPIFFE_ENDPOINT_SOCKET` environment variable
 2. **Connect to the Workload API** over the Unix Domain Socket
 3. **Print readiness signals** to stdout in the following format:
    ```
