@@ -19,6 +19,20 @@ of scope, except where the client must cope with a server misbehaving.
 | **SHOULD** | spec SHOULD / SHOULD NOT | `recommended` | Reported, does not block the claim |
 | **OPT** | spec MAY, or hardening that no spec requires | `optional` | Informational only |
 
+Levels follow the specification text only. A test is never downgraded, skipped
+or tolerated because a widely used SDK fails it; an SDK that does not conform
+fails. In particular:
+
+- **Accepting a valid SVID is MUST.** If the specs make an input a valid SVID
+  (e.g. an allowed `alg`, an optional header left out), rejecting it is
+  non-conformance.
+- **Rejecting an invalid SVID is MUST.** If the specs make an input invalid
+  (a MUST or MUST NOT in the SVID format, or in RFC processing the spec
+  incorporates), accepting it is non-conformance.
+- **SHOULD is reserved for client behaviour the spec itself words as SHOULD**
+  (retries, reconnects, discarding malformed responses). A failing SHOULD
+  test is still reported as `FAIL`, but it does not block the claim.
+
 An SDK is **conformant for a feature group** (see
 [harness contract §5](HARNESS_CONTRACT.md#5-feature-groups)) when every `core` test
 in that group passes. Tests that the harness answers with `unsupported` are reported
@@ -143,7 +157,7 @@ Unless stated otherwise, tokens are ES256 with `aud=["conformance"]`, a 5-minute
 | ID | Requirement | Level | Ref | Method |
 | --- | --- | --- | --- | --- |
 | JV-1 | Accepts a valid token and returns `sub` as the SPIFFE ID (positive control) | MUST | JS §4, WA §6.3 | |
-| JV-2 | Accepts every supported `alg` | SHOULD | JS §2.1 | One sub-result each for RS256/384/512, ES256/384/512, PS256/384/512; the bundle carries matching keys. |
+| JV-2 | Accepts every supported `alg` | MUST | JS §2.1 | One sub-result each for RS256/384/512, ES256/384/512, PS256/384/512; the bundle carries matching keys. |
 | JV-3 | Rejects `alg: none` | MUST | JS §2.1 | |
 | JV-4 | Rejects HS256/HS384/HS512 | MUST | JS §2.1 | Including HMAC keyed with the public key bytes (algorithm confusion). |
 | JV-5 | Rejects asymmetric algorithms outside the list, even if the key is in the bundle | MUST | JS §2.1 | EdDSA with an Ed25519 key that *is* in the bundle. |
@@ -154,7 +168,7 @@ Unless stated otherwise, tokens are ES256 with `aud=["conformance"]`, a 5-minute
 | JV-10 | Accepts `aud` as a single string | MUST | JS §4 (RFC 7519 §4.1.3) | |
 | JV-11 | Rejects a token without `exp` | MUST | JS §3.3 | |
 | JV-12 | Rejects an expired token | MUST | JS §3.3, App. A | `exp` = now − 5 min (beyond reasonable leeway). |
-| JV-13 | Rejects a token whose `nbf` is in the future | SHOULD | JS §4 (RFC 7519 §4.1.5) | `nbf` = now + 5 min. |
+| JV-13 | Rejects a token whose `nbf` is in the future | MUST | JS §4 (RFC 7519 §4.1.5) | `nbf` = now + 5 min. |
 | JV-14 | Rejects a token with a tampered signature | MUST | JS §4 | One bit flipped in the signature. |
 | JV-15 | Rejects a token with a tampered payload | MUST | JS §4 | `sub` changed, original signature. |
 | JV-16 | Rejects a token signed by a key that is not in the bundle | MUST | JS §4, WA §6.3 | Unknown `kid`. |
@@ -162,8 +176,8 @@ Unless stated otherwise, tokens are ES256 with `aud=["conformance"]`, a 5-minute
 | JV-18 | Rejects a token whose `sub` trust domain has no bundle | MUST | WA §6.3 | |
 | JV-19 | Rejects a token whose `sub` is not a SPIFFE ID | MUST | JS §3.1 | See also `ID`. |
 | JV-20 | Accepts `typ` of `JWT`, `JOSE`, or no `typ` | MUST | JS §2.3 | Three sub-results. |
-| JV-21 | Rejects any other `typ` value | SHOULD | JS §2.3 | |
-| JV-22 | Accepts a token without `kid` | SHOULD | JS §2.2 | Note: go-spiffe and SPIRE reject these (WIT-SVID App. C). The test documents that gap. |
+| JV-21 | Rejects any other `typ` value | MUST | JS §2.3 | |
+| JV-22 | Accepts a token without `kid` | MUST | JS §2.2 | `kid` is optional, so such a token is valid. go-spiffe and SPIRE are expected to fail this test (WIT-SVID App. C). |
 | JV-23 | Rejects a token with an unknown `crit` header | MUST | JS §4 (RFC 7515 §4.1.11) | |
 | JV-24 | Rejects JWS JSON serialization | MUST | JS §1, §5.1 | |
 | JV-25 | Rejects a malformed compact token | MUST | JS §5.1 | Wrong part count, invalid base64url, invalid JSON. |
@@ -176,7 +190,7 @@ Unless stated otherwise, tokens are ES256 with `aud=["conformance"]`, a 5-minute
 | JB-2 | Stops accepting a key removed by a streamed bundle update | MUST | WA §4.4 | |
 | JB-3 | Stops accepting tokens from a trust domain whose bundle was removed | SHOULD | WA §4.4 | |
 | JB-4 | Selects the verification key by `kid` among several keys | MUST | JS §6.2 (RFC 7515 §4.1.4) | Three keys; the token uses the second. |
-| JB-5 | Ignores JWKs whose `use` is missing or is not `jwt-svid` | MUST | TB §4.2.2, JS §6.2 | A token signed by such a key is rejected; other keys keep working. |
+| JB-5 | Ignores JWKs whose `use` is missing or is not `jwt-svid` | MUST | TB §4.2.2, JS §6.2 | A token signed by such a key is rejected; other keys keep working. go-spiffe does not check `use` and is expected to fail. |
 | JB-6 | Ignores JWKs with an unknown `kty` without discarding the rest of the bundle | MUST | TB §4.2.1, §4.1.3 | |
 | JB-7 | Treats a bundle with empty `keys` as "trust nothing" for that trust domain | MUST | TB §4.1.3 | |
 | JB-8 | Accepts a token from a federated trust domain using that trust domain's bundle | MUST | WA §6.2.2, §6.3 | |
@@ -244,7 +258,7 @@ barrier pattern.
 | J9 | JV-3, JV-4 | |
 | J10 | JV-11 | |
 | J11 | JV-7 | |
-| J12 | JV-21 | Downgraded to SHOULD: JS §2.3 constrains the issuer |
+| J12 | JV-21 | |
 | J13 | JB-1, JB-2 | |
 
 ## 10. Not covered (yet)
