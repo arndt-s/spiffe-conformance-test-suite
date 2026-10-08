@@ -152,10 +152,7 @@ func (rp *RunningProcess) Version() int { return rp.Readiness.Version }
 // X509Port returns the port on which the harness serves X.509 SVIDs.
 func (rp *RunningProcess) X509Port() int { return rp.Readiness.X509Port }
 
-// JWTPort returns the v0 JWT validation port.
-func (rp *RunningProcess) JWTPort() int { return rp.Readiness.JWTPort }
-
-// ControlPort returns the v1 control port.
+// ControlPort returns the control port.
 func (rp *RunningProcess) ControlPort() int { return rp.Readiness.ControlPort }
 
 func buildEnv(cfg Config) []string {

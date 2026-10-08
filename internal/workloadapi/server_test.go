@@ -241,3 +241,74 @@ func keys(m map[string][]byte) []string {
 	}
 	return out
 }
+
+func TestRawX509ResponseIsSentVerbatim(t *testing.T) {
+	s, client := startServer(t)
+	c := newCA(t, td)
+	svid, err := c.IssueX509SVID(td + "/workload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := &X509State{Materials: []*ca.X509SVIDMaterial{svid}}
+	raw, err := BuildX509Response(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.Svids[0].Bundle = nil
+	s.SetX509State(&X509State{Raw: raw})
+
+	stream, err := client.FetchX509SVID(withHeader(t), &workloadv1.X509SVIDRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Svids) != 1 || resp.Svids[0].Bundle != nil || resp.Svids[0].SpiffeId != td+"/workload" {
+		t.Fatalf("unexpected response: %v", resp)
+	}
+}
+
+func TestCallRecordsFinalStatus(t *testing.T) {
+	s, client := startServer(t)
+	_, err := client.FetchJWTSVID(withHeader(t), &workloadv1.JWTSVIDRequest{Audience: []string{"a"}})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v", err)
+	}
+	calls := s.Calls()
+	if len(calls) != 1 || calls[0].Code != codes.PermissionDenied {
+		t.Fatalf("final status not recorded: %+v", calls)
+	}
+}
+
+func TestValidateJWTSVIDIgnoresKeysAConformantClientMustIgnore(t *testing.T) {
+	s, client := startServer(t)
+	c := newCA(t, td)
+	good := c.JWTKeys()[0]
+	noUse, err := c.AddJWTKey("ES256")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noUse.Use = ""
+	jwks, err := ca.BuildJWKS(c.JWTKeys(), []byte(`{"kty":"XYZ","kid":"u","use":"jwt-svid"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetJWTState(&JWTState{Bundles: map[string][]byte{td: jwks}})
+
+	validate := func(k *ca.JWTKey) error {
+		tok, err := c.IssueJWT(td+"/w", ca.WithJWTKey(k), ca.WithJWTAudience("conformance"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = client.ValidateJWTSVID(withHeader(t), &workloadv1.ValidateJWTSVIDRequest{Audience: "conformance", Svid: tok.Token})
+		return err
+	}
+	if err := validate(good); err != nil {
+		t.Fatalf("token from usable key rejected despite unknown-kty entry: %v", err)
+	}
+	if err := validate(noUse); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("token from key without use: got %v, want InvalidArgument", err)
+	}
+}

@@ -1,9 +1,10 @@
-# Test Catalogue (draft)
+# Test Catalogue
 
-> **Status: Draft.** This catalogue is the source of truth for which test cases
-> exist, what each one asserts, and why. Test IDs here are stable once released.
-> The [mapping table](#9-mapping-from-current-tests) shows how today's X1–X13 /
-> J1–J13 map onto it.
+> This catalogue is the source of truth for which test cases exist, what each
+> one asserts, and why. Test IDs are stable once released. Sub-results carry a
+> `/<variant>` suffix (e.g. `XV-8/server`, `JV-2/RS256`). The
+> [mapping table](#9-mapping-from-earlier-tests) shows how the earlier X1–X13 /
+> J1–J13 tests map onto it.
 
 Every test case comes from a requirement on a **Workload API client / SDK** in the
 SPIFFE specifications. Requirements on servers, issuers or control planes are out
@@ -130,7 +131,7 @@ These rules apply to every test and close the loopholes in the current suite.
 | XS-2 | Presents the full chain, leaf first, including intermediates | MUST | WA §5.1 (`x509_svid`) | Issue from an intermediate CA; the suite verifies against the root only. |
 | XS-3 | Uses a rotated SVID for new connections | MUST | WA §4.3 | Push A, then B; expect B. |
 | XS-4 | Accepts a trust bundle with several concatenated CA certificates and trusts each | MUST | WA §5.1 (`bundle`) | Bundle = CA1‖CA2; peers from both are accepted. |
-| XS-5 | Stops trusting a CA once it is removed from the bundle | MUST | WA §4.3, §4.4 | Replace the bundle with CA2 only; peers from CA1 are rejected. |
+| XS-5 | Stops trusting a CA once it is removed from the bundle | MUST | WA §4.3, §4.4 | Serve CA1‖CA2, then CA1 only (barrier); peers from CA2 are rejected. CA1 issues the suite's probe certificate, so it stays. |
 
 ### 5.2 Peer validation — `XV` (roles: server, client)
 
@@ -150,13 +151,13 @@ These rules apply to every test and close the loopholes in the current suite.
 | XV-12 | Rejects a peer without a URI SAN | MUST | XS §2 | |
 | XV-13 | Rejects a peer URI SAN that is not `spiffe://` | MUST | XS §5.2 | |
 | XV-14 | Rejects a peer SPIFFE ID without a path (`spiffe://td`) | MUST | XS §3.1, §5.2 | |
-| XV-15 | Rejects a peer whose trust domain has no bundle, even if its chain verifies against another trust domain's CA | MUST | WA §4.6, FD §7.3 | Leaf `spiffe://other.test/x` signed by the local CA. |
+| XV-15 | Rejects a peer whose trust domain has no bundle, even if its chain verifies against another trust domain's CA | MUST | WA §4.6, FD §7.3 | Leaf `spiffe://other.example.org/x` signed by the local CA. |
 
 ### 5.3 Federation — `XF` (roles: server, client)
 
 | ID | Requirement | Level | Ref | Method |
 | --- | --- | --- | --- | --- |
-| XF-1 | Accepts a peer from a federated trust domain using `federated_bundles` | MUST | WA §4.6 | Bundle for `spiffe://fed.test`; peer from `fed.test`. |
+| XF-1 | Accepts a peer from a federated trust domain using `federated_bundles` | MUST | WA §4.6 | Bundle for `spiffe://fed.example.org`; peer from that trust domain. |
 | XF-2 | Rejects a peer claiming trust domain B whose chain only verifies against trust domain A's bundle (no bundle merging) | MUST | WA §4.6, FD §4.2, §7.3 | Both bundles present. |
 | XF-3 | Stops trusting a federated trust domain when a later response omits it | MUST | WA §4.4 | Push without `federated_bundles` (barrier), then peer from `fed.test` is rejected. |
 
@@ -173,7 +174,7 @@ Unless stated otherwise, tokens are ES256 with `aud=["conformance"]`, a 5-minute
 | JV-1 | Accepts a valid token and returns `sub` as the SPIFFE ID (positive control) | MUST | JS §4, WA §6.3 | |
 | JV-2 | Accepts every supported `alg` | MUST | JS §2.1 | One sub-result each for RS256/384/512, ES256/384/512, PS256/384/512; the bundle carries matching keys. |
 | JV-3 | Rejects `alg: none` | MUST | JS §2.1 | |
-| JV-4 | Rejects HS256/HS384/HS512 | MUST | JS §2.1 | Including HMAC keyed with the public key bytes (algorithm confusion). |
+| JV-4 | Rejects HS256/HS384/HS512 | MUST | JS §2.1 | Including HMAC keyed with the bundle key's PEM-encoded public key (algorithm confusion). |
 | JV-5 | Rejects asymmetric algorithms outside the list, even if the key is in the bundle | MUST | JS §2.1 | EdDSA with an Ed25519 key that *is* in the bundle. |
 | JV-6 | Rejects an `alg` that does not match the key type | MUST | JS §4 | `RS256` header with an EC key `kid`; `ES384` header with a P-256 key. |
 | JV-7 | Rejects a token without `aud` | MUST | JS §3.2 | |
@@ -204,7 +205,8 @@ Unless stated otherwise, tokens are ES256 with `aud=["conformance"]`, a 5-minute
 | JB-2 | Stops accepting a key removed by a streamed bundle update | MUST | WA §4.4 | |
 | JB-3 | Stops accepting tokens from a trust domain whose bundle was removed | SHOULD | WA §4.4 | |
 | JB-4 | Selects the verification key by `kid` among several keys | MUST | JS §6.2 (RFC 7515 §4.1.4) | Three keys; the token uses the second. |
-| JB-5 | Ignores JWKs whose `use` is missing or is not `jwt-svid` | MUST | TB §4.2.2, JS §6.2 | A token signed by such a key is rejected; other keys keep working. go-spiffe does not check `use` and is expected to fail. |
+| JB-5/x509-svid-use | Ignores JWKs whose `use` is not `jwt-svid` | MUST | JS §6.2, TB §4.2.2 | A token signed by a key with `use: x509-svid` is rejected; other keys keep working. |
+| JB-5/missing-use | Ignores JWKs without `use` | OPT | TB §4.2.2 (WA §6.2.2 unclear) | As above, for a key without `use`. TB §4.2.2 requires ignoring such keys in SPIFFE bundles, but WA §6.2.2 only describes the Workload API's JWT bundle as a standard JWK Set, so it is unclear whether the rule applies there. |
 | JB-6 | Ignores JWKs with an unknown `kty` without discarding the rest of the bundle | MUST | TB §4.2.1, §4.1.3 | |
 | JB-7 | Treats a bundle with empty `keys` as "trust nothing" for that trust domain | MUST | TB §4.1.3 | |
 | JB-8 | Accepts a token from a federated trust domain using that trust domain's bundle | MUST | WA §6.2.2, §6.3 | |
@@ -228,7 +230,7 @@ are also run as X.509 URI SANs (XV role `server`).
 | ID-1 | Rejects invalid SPIFFE IDs | MUST | ID §2, §2.1, §2.2 | empty trust domain `spiffe:///a`; port `spiffe://td:8080/a`; userinfo `spiffe://u@td/a`; query `?x=1`; fragment `#f`; percent-encoded path `%41`; empty segment `/a//b`; dot segments `/a/./b`, `/a/../b`; trailing slash `/a/`; invalid path character `/a!b`; invalid trust domain character `spiffe://t$d/a` |
 | ID-2 | Accepts valid edge-case SPIFFE IDs | MUST | ID §2.1, §2.2, §2.3 | path characters `.-_` and mixed case; trust domain with `_` and digits; IPv4-like trust domain; a 2048-byte ID |
 
-## 8. Hardening — `HX` (optional, feature `x509-server`)
+## 8. Hardening — `HX` (optional, feature `x509-server`, ref "catalogue §8")
 
 No specification requires a client to validate the SVIDs it receives from the
 Workload API, because the Workload API is a trusted source. These tests record
@@ -247,9 +249,9 @@ barrier pattern.
 | HX-8 | … whose private key does not match the certificate | OPT |
 | HX-9 | … whose `spiffe_id` field differs from the certificate's URI SAN | OPT |
 
-## 9. Mapping from current tests
+## 9. Mapping from earlier tests
 
-| Current | New | Notes |
+| Earlier | New | Notes |
 | --- | --- | --- |
 | X1 | XS-1 | |
 | X2 | XS-3 | |
@@ -275,7 +277,18 @@ barrier pattern.
 | J12 | JV-21 | |
 | J13 | JB-1, JB-2 | |
 
-## 10. Not covered (yet)
+## 10. Known limitations of the tests
+
+- **ID-1 with an empty or invalid trust domain** cannot be served a JWT bundle,
+  so a rejection may come from the missing bundle rather than from ID parsing.
+- **WA-4** observes the X.509 port. For SDKs that only expose a watch API, the
+  harness keeps serving the last SVID once the watch ends (contract §1.3), so
+  the result reflects the SDK offering no way to withdraw an SVID.
+- **Timing thresholds** (EP-5/6 backoff of at least 50 ms between attempts on
+  average, EP-7 at most 2 calls per method in 5 s, 1 s watch windows for WA-2
+  and HX) are generous on purpose; they detect tight loops, not slow SDKs.
+
+## 11. Not covered (yet)
 
 - **Hint-based SVID selection** (WA §5.2.1 duplicate hints, §8). Needs a contract
   endpoint for selecting by hint.

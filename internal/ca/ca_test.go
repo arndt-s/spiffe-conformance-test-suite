@@ -177,3 +177,73 @@ func TestLeafCarriesBasicConstraintsWithCAFalse(t *testing.T) {
 		t.Fatal("leaf lacks digitalSignature")
 	}
 }
+
+func TestSignRawJWTValidatesWithGoSpiffeAndSupportsOverrides(t *testing.T) {
+	c, err := New(td)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := c.JWTKeys()[0]
+	jwks, err := c.JWKSBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := jwtbundle.Parse(spiffeid.RequireTrustDomainFromString(td), jwks)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tok, err := SignRawJWT(key, nil, ValidJWTClaims(td+"/w", "conformance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jwtsvid.ParseAndValidate(tok, bundle, []string{"conformance"}); err != nil {
+		t.Fatalf("valid raw token rejected: %v", err)
+	}
+
+	mismatch, err := SignRawJWT(key, map[string]any{"alg": "RS256"}, ValidJWTClaims(td+"/w", "conformance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jwtsvid.ParseAndValidate(mismatch, bundle, []string{"conformance"}); err == nil {
+		t.Fatal("alg-mismatch token accepted")
+	}
+}
+
+func TestBuildJWKSWithExtraAndEmpty(t *testing.T) {
+	empty, err := BuildJWKS(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(empty) != `{"keys":[]}` {
+		t.Fatalf("empty JWKS = %s", empty)
+	}
+	withExtra, err := BuildJWKS(nil, json.RawMessage(`{"kty":"XYZ","kid":"x","use":"jwt-svid"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(withExtra) != `{"keys":[{"kty":"XYZ","kid":"x","use":"jwt-svid"}]}` {
+		t.Fatalf("JWKS = %s", withExtra)
+	}
+}
+
+func TestX509OptionsEmptySubjectAndNoURI(t *testing.T) {
+	c, err := New(td)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := c.IssueX509SVID(td+"/w", WithX509EmptySubject())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Cert.Subject.Names) != 0 || len(m.Cert.URIs) != 1 {
+		t.Fatalf("subject=%v uris=%v", m.Cert.Subject, m.Cert.URIs)
+	}
+	noURI, err := c.IssueX509SVID(td+"/w", WithX509URIOverride())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(noURI.Cert.URIs) != 0 {
+		t.Fatalf("URIs = %v, want none", noURI.Cert.URIs)
+	}
+}

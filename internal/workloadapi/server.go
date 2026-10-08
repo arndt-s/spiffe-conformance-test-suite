@@ -3,6 +3,7 @@ package workloadapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -168,7 +169,8 @@ func (s *Server) Calls() []Call {
 
 // begin records the call and decides whether to accept it: it checks the
 // mandatory security header (Workload Endpoint §3) and applies injected faults.
-func (s *Server) begin(ctx context.Context, method string, req proto.Message) error {
+// It returns the index of the recorded call for finish.
+func (s *Server) begin(ctx context.Context, method string, req proto.Message) (int, error) {
 	hasHeader := false
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		vals := md.Get("workload.spiffe.io")
@@ -196,7 +198,17 @@ func (s *Server) begin(ctx context.Context, method string, req proto.Message) er
 		Request:   req,
 		Code:      status.Code(err),
 	})
-	return err
+	return len(s.calls) - 1, err
+}
+
+// finish records the status a call ended with, if it ended with an error.
+func (s *Server) finish(idx int, err error) {
+	if err == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls[idx].Code = status.Code(err)
 }
 
 // stream runs a server-streaming RPC: it sends the current response, then
@@ -243,8 +255,10 @@ func (s *Server) jwtSnapshot() *JWTState {
 func (s *Server) FetchX509SVID(
 	req *workloadv1.X509SVIDRequest,
 	stream workloadv1.SpiffeWorkloadAPI_FetchX509SVIDServer,
-) error {
-	if err := s.begin(stream.Context(), MethodFetchX509SVID, req); err != nil {
+) (retErr error) {
+	idx, err := s.begin(stream.Context(), MethodFetchX509SVID, req)
+	defer func() { s.finish(idx, retErr) }()
+	if err != nil {
 		return err
 	}
 	return s.stream(stream.Context(), func() chan struct{} { return s.x509Notify }, func() (bool, error) {
@@ -252,7 +266,7 @@ func (s *Server) FetchX509SVID(
 		if state == nil {
 			return false, nil
 		}
-		resp, err := x509StateToProto(state)
+		resp, err := BuildX509Response(state)
 		if err != nil {
 			return false, status.Errorf(codes.Internal, "build response: %v", err)
 		}
@@ -263,8 +277,10 @@ func (s *Server) FetchX509SVID(
 func (s *Server) FetchX509Bundles(
 	req *workloadv1.X509BundlesRequest,
 	stream workloadv1.SpiffeWorkloadAPI_FetchX509BundlesServer,
-) error {
-	if err := s.begin(stream.Context(), MethodFetchX509Bundles, req); err != nil {
+) (retErr error) {
+	idx, err := s.begin(stream.Context(), MethodFetchX509Bundles, req)
+	defer func() { s.finish(idx, retErr) }()
+	if err != nil {
 		return err
 	}
 	return s.stream(stream.Context(), func() chan struct{} { return s.x509Notify }, func() (bool, error) {
@@ -286,8 +302,10 @@ func (s *Server) FetchX509Bundles(
 func (s *Server) FetchJWTSVID(
 	ctx context.Context,
 	req *workloadv1.JWTSVIDRequest,
-) (*workloadv1.JWTSVIDResponse, error) {
-	if err := s.begin(ctx, MethodFetchJWTSVID, req); err != nil {
+) (_ *workloadv1.JWTSVIDResponse, retErr error) {
+	idx, err := s.begin(ctx, MethodFetchJWTSVID, req)
+	defer func() { s.finish(idx, retErr) }()
+	if err != nil {
 		return nil, err
 	}
 	if len(req.Audience) == 0 {
@@ -313,8 +331,10 @@ func (s *Server) FetchJWTSVID(
 func (s *Server) FetchJWTBundles(
 	req *workloadv1.JWTBundlesRequest,
 	stream workloadv1.SpiffeWorkloadAPI_FetchJWTBundlesServer,
-) error {
-	if err := s.begin(stream.Context(), MethodFetchJWTBundles, req); err != nil {
+) (retErr error) {
+	idx, err := s.begin(stream.Context(), MethodFetchJWTBundles, req)
+	defer func() { s.finish(idx, retErr) }()
+	if err != nil {
 		return err
 	}
 	return s.stream(stream.Context(), func() chan struct{} { return s.jwtNotify }, func() (bool, error) {
@@ -331,13 +351,17 @@ func (s *Server) FetchJWTBundles(
 }
 
 // ValidateJWTSVID validates a JWT-SVID against the current JWT bundles. It
-// delegates to go-spiffe, so SDKs that use this RPC are only as well tested as
-// go-spiffe's validator; the suite flags such runs as delegated.
+// uses go-spiffe's validator after dropping JWKs a conformant client must
+// ignore (unknown kty, use other than "jwt-svid"; TB §4.2), so SDKs that
+// delegate to this RPC are only as well tested as that; the suite flags such
+// runs as delegated.
 func (s *Server) ValidateJWTSVID(
 	ctx context.Context,
 	req *workloadv1.ValidateJWTSVIDRequest,
-) (*workloadv1.ValidateJWTSVIDResponse, error) {
-	if err := s.begin(ctx, MethodValidateJWTSVID, req); err != nil {
+) (_ *workloadv1.ValidateJWTSVIDResponse, retErr error) {
+	idx, err := s.begin(ctx, MethodValidateJWTSVID, req)
+	defer func() { s.finish(idx, retErr) }()
+	if err != nil {
 		return nil, err
 	}
 	if req.Audience == "" || req.Svid == "" {
@@ -351,7 +375,11 @@ func (s *Server) ValidateJWTSVID(
 			if err != nil {
 				return nil, status.Errorf(codes.Internal, "bad trust domain %q in state: %v", tdStr, err)
 			}
-			b, err := jwtbundle.Parse(td, jwks)
+			usable, err := jwtSVIDKeysOnly(jwks)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "bad JWKS for %q in state: %v", tdStr, err)
+			}
+			b, err := jwtbundle.Parse(td, usable)
 			if err != nil {
 				return nil, status.Errorf(codes.Internal, "bad JWKS for %q in state: %v", tdStr, err)
 			}
@@ -370,8 +398,12 @@ func (s *Server) ValidateJWTSVID(
 	return &workloadv1.ValidateJWTSVIDResponse{SpiffeId: svid.ID.String(), Claims: claims}, nil
 }
 
-// x509StateToProto converts X509State to the wire proto.
-func x509StateToProto(state *X509State) (*workloadv1.X509SVIDResponse, error) {
+// BuildX509Response converts X509State to the wire proto, or returns
+// state.Raw if it is set.
+func BuildX509Response(state *X509State) (*workloadv1.X509SVIDResponse, error) {
+	if state.Raw != nil {
+		return state.Raw, nil
+	}
 	bundle := ownBundle(state)
 	var svids []*workloadv1.X509SVID
 	for _, m := range state.Materials {
@@ -421,4 +453,35 @@ func trustDomainOf(state *X509State) string {
 		return ""
 	}
 	return "spiffe://" + u.Host
+}
+
+// jwtSVIDKeysOnly returns jwks with only the entries a JWT-SVID validator may
+// use: a known key type and use "jwt-svid" (TB §4.2.1, §4.2.2; JS §6.2).
+func jwtSVIDKeysOnly(jwks []byte) ([]byte, error) {
+	var set struct {
+		Keys []json.RawMessage `json:"keys"`
+	}
+	if err := json.Unmarshal(jwks, &set); err != nil {
+		return nil, err
+	}
+	kept := []json.RawMessage{}
+	for _, raw := range set.Keys {
+		var k struct {
+			Kty string `json:"kty"`
+			Use string `json:"use"`
+		}
+		if err := json.Unmarshal(raw, &k); err != nil {
+			continue
+		}
+		switch k.Kty {
+		case "EC", "RSA", "OKP":
+		default:
+			continue
+		}
+		if k.Use != "jwt-svid" {
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	return json.Marshal(map[string]any{"keys": kept})
 }

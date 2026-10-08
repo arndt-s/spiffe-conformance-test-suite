@@ -13,8 +13,7 @@ type Readiness struct {
 	// Version is the harness contract version (0 if no SPIFFE_HARNESS_VERSION line).
 	Version     int
 	X509Port    int
-	JWTPort     int // v0 only
-	ControlPort int // v1 and later
+	ControlPort int
 	Ready       bool
 }
 
@@ -39,15 +38,13 @@ func parseStdout(reader io.Reader, r *Readiness) error {
 func (r *Readiness) validate() error {
 	switch r.Version {
 	case 0:
-		if r.X509Port == 0 || r.JWTPort == 0 {
-			return fmt.Errorf("READY before SPIFFE_X509_PORT and SPIFFE_JWT_PORT were announced: %+v", *r)
-		}
+		return fmt.Errorf("harness did not announce SPIFFE_HARNESS_VERSION; the v0 protocol is no longer supported (see docs/HARNESS_CONTRACT.md)")
 	case 1:
 		if r.X509Port == 0 || r.ControlPort == 0 {
 			return fmt.Errorf("READY before SPIFFE_X509_PORT and SPIFFE_CONTROL_PORT were announced: %+v", *r)
 		}
 	default:
-		return fmt.Errorf("unsupported SPIFFE_HARNESS_VERSION=%d (suite supports 0 and 1)", r.Version)
+		return fmt.Errorf("unsupported SPIFFE_HARNESS_VERSION=%d (suite supports 1)", r.Version)
 	}
 	return nil
 }
@@ -68,8 +65,6 @@ func parseLine(line string, r *Readiness) error {
 		dst = &r.Version
 	case "SPIFFE_X509_PORT":
 		dst = &r.X509Port
-	case "SPIFFE_JWT_PORT":
-		dst = &r.JWTPort
 	case "SPIFFE_CONTROL_PORT":
 		dst = &r.ControlPort
 	default:

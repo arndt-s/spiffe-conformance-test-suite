@@ -5,11 +5,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/ca"
@@ -18,131 +19,199 @@ import (
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/workloadapi"
 )
 
+// TrustDomain is the SPIFFE ID of the trust domain the suite's CA serves.
+const TrustDomain = "spiffe://test.example.org"
+
+// DefaultSVIDID is the SPIFFE ID of the X.509-SVID served when a test starts.
+const DefaultSVIDID = TrustDomain + "/default"
+
+// Audience is the audience the suite asks SDKs to validate JWT-SVIDs for.
+const Audience = "conformance"
+
+// EnvOptions changes how a test's environment is set up.
+type EnvOptions struct {
+	// ManualStart leaves the harness stopped; the test calls StartHarness.
+	ManualStart bool
+	// TCPEndpoint serves the mock Workload API on tcp://127.0.0.1:<port>
+	// instead of a Unix domain socket.
+	TCPEndpoint bool
+	// DeferServerStart creates the mock server without listening; the test
+	// calls Server().Start(). Requires ManualStart.
+	DeferServerStart bool
+}
+
 // TestEnv provides high-level helpers for all components available to a
 // test case. It owns the CA, mock server, and the running harness process.
 type TestEnv struct {
-	ca        *ca.CA
-	server    *workloadapi.Server
-	process   *harness.RunningProcess
-	control   *prober.Control // nil for v0 harnesses
+	cfg      RunnerConfig
+	opts     EnvOptions
+	ca       *ca.CA
+	server   *workloadapi.Server
+	endpoint string
+	tmpDir   string
+
+	process *harness.RunningProcess
+	control *prober.Control
+
 	probeCert tls.Certificate // valid client cert for ProbeX509 calls
-	trustPool *x509.CertPool  // trust pool built from test CA
+
+	trustMu   sync.Mutex
+	trustPool *x509.CertPool // roots the suite uses to verify what the SDK presents
 }
 
-// newTestEnv creates and wires up a complete test environment.
-// It returns the env, a cleanup func, and any startup error.
-func newTestEnv(ctx context.Context, cmd string, args []string, stdout, stderr io.Writer) (*TestEnv, func(), error) {
-	tmpDir, err := os.MkdirTemp("", "spiffe-suite-*")
+var barrierSeq atomic.Uint64
+
+// newTestEnv creates the CA and mock server, serves a default X.509-SVID,
+// JWT-SVID and JWT bundle, and (unless opts.ManualStart) starts the harness.
+func newTestEnv(ctx context.Context, cfg RunnerConfig, opts EnvOptions) (*TestEnv, error) {
+	if opts.DeferServerStart && !opts.ManualStart {
+		return nil, fmt.Errorf("DeferServerStart requires ManualStart")
+	}
+	// Short base path: Unix socket paths are limited to ~108 bytes.
+	tmpDir, err := os.MkdirTemp("", "scts-*")
 	if err != nil {
-		return nil, nil, fmt.Errorf("mktemp: %w", err)
+		return nil, fmt.Errorf("mktemp: %w", err)
 	}
-	cleanup := func() { os.RemoveAll(tmpDir) }
 
-	trustDomain := "spiffe://test.example.org"
-	authority, err := ca.New(trustDomain)
+	authority, err := ca.New(TrustDomain)
 	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("create CA: %w", err)
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("create CA: %w", err)
 	}
 
-	socketPath := filepath.Join(tmpDir, "workload.sock")
-	server := workloadapi.NewServer(socketPath)
-	if err := server.Start(); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("start workload server: %w", err)
+	e := &TestEnv{cfg: cfg, opts: opts, ca: authority, tmpDir: tmpDir, trustPool: authority.CACertPool()}
+	if opts.TCPEndpoint {
+		e.server = workloadapi.NewTCPServer("127.0.0.1:0")
+	} else {
+		socket := filepath.Join(tmpDir, "api.sock")
+		e.server = workloadapi.NewServer(socket)
+		e.endpoint = "unix://" + socket
+	}
+	if !opts.DeferServerStart {
+		if err := e.server.Start(); err != nil {
+			e.close()
+			return nil, fmt.Errorf("start workload server: %w", err)
+		}
+	}
+	if opts.TCPEndpoint {
+		e.endpoint = "tcp://" + e.server.SocketPath()
 	}
 
-	// Pre-populate state so the subprocess can complete its startup sequence.
-	// Individual test cases may replace this state after newTestEnv returns.
-	defaultX509, err := authority.IssueX509SVID("spiffe://test.example.org/default")
+	defaultX509, err := authority.IssueX509SVID(DefaultSVIDID)
 	if err != nil {
-		server.Stop()
-		cleanup()
-		return nil, nil, fmt.Errorf("issue default X.509 SVID: %w", err)
+		e.close()
+		return nil, fmt.Errorf("issue default X.509 SVID: %w", err)
 	}
-	server.SetX509State(&workloadapi.X509State{
-		Materials:   []*ca.X509SVIDMaterial{defaultX509},
-		TrustBundle: [][]byte{authority.CACertDER()},
-		TrustDomain: authority.TrustDomain(),
-	})
+	e.ServeX509(defaultX509)
 
-	defaultJWT, err := authority.IssueJWT("spiffe://test.example.org/default")
+	defaultJWT, err := authority.IssueJWT(DefaultSVIDID)
 	if err != nil {
-		server.Stop()
-		cleanup()
-		return nil, nil, fmt.Errorf("issue default JWT SVID: %w", err)
+		e.close()
+		return nil, fmt.Errorf("issue default JWT SVID: %w", err)
 	}
-	defaultJWKS, err := authority.JWKSBytes()
+	if err := e.ServeJWT(defaultJWT); err != nil {
+		e.close()
+		return nil, err
+	}
+
+	probeSVID, err := authority.IssueX509SVID(TrustDomain + "/probe")
 	if err != nil {
-		server.Stop()
-		cleanup()
-		return nil, nil, fmt.Errorf("build default JWKS: %w", err)
+		e.close()
+		return nil, fmt.Errorf("issue probe SVID: %w", err)
 	}
-	server.SetJWTState(&workloadapi.JWTState{
-		Materials: []*ca.JWTSVIDMaterial{defaultJWT},
-		Bundles:   map[string][]byte{authority.TrustDomain(): defaultJWKS},
-	})
+	e.probeCert = probeSVID.TLSCertificate()
 
-	probeSVID, err := authority.IssueX509SVID("spiffe://test.example.org/probe")
-	if err != nil {
-		server.Stop()
-		cleanup()
-		return nil, nil, fmt.Errorf("issue probe SVID: %w", err)
+	if !opts.ManualStart {
+		timeout := cfg.ReadyTimeout
+		if timeout == 0 {
+			timeout = harness.DefaultReadinessTimeout
+		}
+		if err := e.StartHarness(ctx, timeout); err != nil {
+			e.close()
+			return nil, err
+		}
 	}
-
-	process, err := harness.Start(ctx, harness.Config{
-		Cmd:      cmd,
-		Args:     splitArgs(args),
-		Endpoint: "unix://" + socketPath,
-		StdOut:   stdout,
-		StdErr:   stderr,
-	})
-	if err != nil {
-		server.Stop()
-		cleanup()
-		return nil, nil, fmt.Errorf("start harness: %w", err)
-	}
-
-	env := &TestEnv{
-		ca:        authority,
-		server:    server,
-		process:   process,
-		probeCert: probeSVID.TLSCertificate(),
-		trustPool: authority.CACertPool(),
-	}
-	if process.Version() >= 1 {
-		env.control = prober.NewControl(process.ControlPort())
-	}
-
-	fullCleanup := func() {
-		process.Stop()
-		server.Stop()
-		cleanup()
-	}
-	return env, fullCleanup, nil
+	return e, nil
 }
 
-// HarnessVersion returns the harness contract version the SDK harness speaks.
-func (e *TestEnv) HarnessVersion() int { return e.process.Version() }
+func (e *TestEnv) close() {
+	if e.process != nil {
+		e.process.Stop()
+	}
+	e.server.Stop()
+	os.RemoveAll(e.tmpDir)
+}
+
+// Endpoint returns the SPIFFE_ENDPOINT_SOCKET value the harness is given.
+// With DeferServerStart and TCPEndpoint it is only known after Server().Start().
+func (e *TestEnv) Endpoint() string { return e.endpoint }
+
+// StartHarness starts the harness with the environment's endpoint and waits
+// up to timeout for READY. See StartHarnessWithEndpoint.
+func (e *TestEnv) StartHarness(ctx context.Context, timeout time.Duration) error {
+	return e.StartHarnessWithEndpoint(ctx, e.endpoint, timeout)
+}
+
+// StartHarnessWithEndpoint starts the harness with SPIFFE_ENDPOINT_SOCKET set
+// to endpoint and waits up to timeout for READY. It returns an error if the
+// harness did not become ready; in a ManualStart test that may be the
+// expected outcome, so the error is not an ExecutionError.
+func (e *TestEnv) StartHarnessWithEndpoint(ctx context.Context, endpoint string, timeout time.Duration) error {
+	if e.process != nil {
+		return ExecErrorf("harness already started")
+	}
+	p, err := harness.Start(ctx, harness.Config{
+		Cmd:              e.cfg.Cmd,
+		Args:             splitArgs(e.cfg.Args),
+		Endpoint:         endpoint,
+		ReadinessTimeout: timeout,
+		StdOut:           e.cfg.StOut,
+		StdErr:           e.cfg.StErr,
+	})
+	if err != nil {
+		return fmt.Errorf("start harness: %w", err)
+	}
+	e.process = p
+	e.control = prober.NewControl(p.ControlPort())
+	return nil
+}
 
 // Server returns the mock Workload API server, e.g. to inject errors or
 // inspect recorded calls.
 func (e *TestEnv) Server() *workloadapi.Server { return e.server }
 
-// CA returns the underlying CA for direct access when needed.
+// CA returns the suite's CA for TrustDomain.
 func (e *TestEnv) CA() *ca.CA { return e.ca }
 
-// IssueX509SVID issues an X.509 SVID from the test CA.
+// TrustRoot adds c's root to the roots the suite uses to verify SVIDs the
+// SDK presents. Call it before serving SVIDs issued by another CA.
+func (e *TestEnv) TrustRoot(c *ca.CA) {
+	cert, err := x509.ParseCertificate(c.CACertDER())
+	if err != nil {
+		panic(err) // c.CACertDER is always a valid certificate
+	}
+	e.trustMu.Lock()
+	defer e.trustMu.Unlock()
+	e.trustPool.AddCert(cert)
+}
+
+func (e *TestEnv) roots() *x509.CertPool {
+	e.trustMu.Lock()
+	defer e.trustMu.Unlock()
+	return e.trustPool.Clone()
+}
+
+// IssueX509SVID issues an X.509 SVID from the suite's CA.
 func (e *TestEnv) IssueX509SVID(spiffeID string, opts ...ca.X509SVIDOption) (*ca.X509SVIDMaterial, error) {
 	return e.ca.IssueX509SVID(spiffeID, opts...)
 }
 
-// IssueJWT issues a JWT SVID from the test CA.
+// IssueJWT issues a JWT SVID from the suite's CA.
 func (e *TestEnv) IssueJWT(spiffeID string, opts ...ca.JWTSVIDOption) (*ca.JWTSVIDMaterial, error) {
 	return e.ca.IssueJWT(spiffeID, opts...)
 }
 
-// ServeX509 sets the X.509 state so the mock server returns the given materials.
+// ServeX509 serves the given SVIDs with the suite CA's bundle.
 func (e *TestEnv) ServeX509(materials ...*ca.X509SVIDMaterial) {
 	e.server.SetX509State(&workloadapi.X509State{
 		Materials:   materials,
@@ -151,16 +220,16 @@ func (e *TestEnv) ServeX509(materials ...*ca.X509SVIDMaterial) {
 	})
 }
 
-// PushX509Update replaces the X.509 state and triggers a streaming update.
-func (e *TestEnv) PushX509Update(materials ...*ca.X509SVIDMaterial) {
-	e.ServeX509(materials...)
+// SetX509State is a raw escape hatch for setting X.509 server state directly.
+func (e *TestEnv) SetX509State(state *workloadapi.X509State) {
+	e.server.SetX509State(state)
 }
 
-// ServeJWTBundle sets only the JWT bundle in the JWT state, without SVID materials.
+// ServeJWTBundle serves the suite CA's JWT bundle and no JWT-SVIDs.
 func (e *TestEnv) ServeJWTBundle() error {
 	jwks, err := e.ca.JWKSBytes()
 	if err != nil {
-		return fmt.Errorf("build JWKS: %w", err)
+		return ExecErrorf("build JWKS: %w", err)
 	}
 	e.server.SetJWTState(&workloadapi.JWTState{
 		Bundles: map[string][]byte{e.ca.TrustDomain(): jwks},
@@ -168,12 +237,12 @@ func (e *TestEnv) ServeJWTBundle() error {
 	return nil
 }
 
-// ServeJWT sets the JWT state so the mock server returns the given materials.
-// It automatically populates the JWT bundle from the test CA so the SDK can validate tokens.
+// ServeJWT serves the given JWT-SVIDs (for FetchJWTSVID) with the suite CA's
+// JWT bundle.
 func (e *TestEnv) ServeJWT(materials ...*ca.JWTSVIDMaterial) error {
 	jwks, err := e.ca.JWKSBytes()
 	if err != nil {
-		return fmt.Errorf("build JWKS: %w", err)
+		return ExecErrorf("build JWKS: %w", err)
 	}
 	e.server.SetJWTState(&workloadapi.JWTState{
 		Materials: materials,
@@ -182,24 +251,23 @@ func (e *TestEnv) ServeJWT(materials ...*ca.JWTSVIDMaterial) error {
 	return nil
 }
 
-// SetX509State is a raw escape hatch for setting X.509 server state directly.
-func (e *TestEnv) SetX509State(state *workloadapi.X509State) {
-	e.server.SetX509State(state)
-}
-
-// SetJWTState is a raw escape hatch for setting JWT server state directly.
+// SetJWTState is a raw escape hatch for setting JWT server state directly
+// (bundles keyed by trust domain SPIFFE ID).
 func (e *TestEnv) SetJWTState(state *workloadapi.JWTState) {
 	e.server.SetJWTState(state)
 }
 
 // ProbeX509 connects to the SDK's X.509 port presenting the suite's valid
-// probe SVID. It returns an error if the connection fails or the SDK rejects
-// the probe certificate.
+// probe SVID, verifying the SDK's SVID against the trusted roots. It returns
+// an error if the connection fails or the SDK rejects the probe certificate.
 func (e *TestEnv) ProbeX509() (*prober.X509ProbeResult, error) {
-	return prober.ProbeX509(e.process.X509Port(), e.probeCert, e.trustPool, e.process.Version() >= 1)
+	if e.process == nil {
+		return nil, ExecErrorf("harness not started")
+	}
+	return prober.ProbeX509(e.process.X509Port(), e.probeCert, e.roots())
 }
 
-// UnauthenticatedPeerLine is what a v1 harness writes on the X.509 port when
+// UnauthenticatedPeerLine is what a harness writes on the X.509 port when
 // the SDK cannot authenticate peer X.509-SVIDs (harness contract §3).
 const UnauthenticatedPeerLine = "-"
 
@@ -207,7 +275,10 @@ const UnauthenticatedPeerLine = "-"
 // the client certificate and reports whether the SDK accepted it. It returns a
 // SkipError if the harness declares that the SDK cannot authenticate peers.
 func (e *TestEnv) ClientCertVerdict(clientSVID *ca.X509SVIDMaterial) (bool, error) {
-	res, err := prober.ProbeX509(e.process.X509Port(), clientSVID.TLSCertificate(), e.trustPool, e.process.Version() >= 1)
+	if e.process == nil {
+		return false, ExecErrorf("harness not started")
+	}
+	res, err := prober.ProbeX509(e.process.X509Port(), clientSVID.TLSCertificate(), e.roots())
 	if err != nil {
 		return false, nil
 	}
@@ -232,21 +303,8 @@ type JWTVerdict struct {
 // support JWT validation.
 func (e *TestEnv) ValidateJWT(token, audience string) (JWTVerdict, error) {
 	if e.control == nil {
-		// v0: fixed audience, and no way to tell rejection from error.
-		if audience != "conformance" {
-			return JWTVerdict{}, Skipf("v0 harnesses only validate for audience %q", "conformance")
-		}
-		res, err := prober.ProbeJWT(e.process.JWTPort(), token)
-		if err != nil {
-			return JWTVerdict{}, &ExecutionError{Err: e.withStderr(err)}
-		}
-		return JWTVerdict{
-			Accepted: res.HTTPStatus == 200 && res.Status == "valid",
-			SPIFFEID: res.SPIFFEID,
-			Message:  res.Message,
-		}, nil
+		return JWTVerdict{}, ExecErrorf("harness not started")
 	}
-
 	res, err := e.control.ValidateJWT(token, audience)
 	if err != nil {
 		return JWTVerdict{}, &ExecutionError{Err: e.withStderr(err)}
@@ -269,7 +327,7 @@ func (e *TestEnv) ValidateJWT(token, audience string) (JWTVerdict, error) {
 // returned as a response with Status OutcomeError, not as an error.
 func (e *TestEnv) FetchJWTFromSDK(audience []string, spiffeID string) (*prober.ControlResponse, error) {
 	if e.control == nil {
-		return nil, Skipf("JWT fetching requires harness contract v1")
+		return nil, ExecErrorf("harness not started")
 	}
 	res, err := e.control.FetchJWT(audience, spiffeID)
 	if err != nil {
@@ -294,16 +352,17 @@ type DialVerdict struct {
 }
 
 // DialFromSDK starts a one-shot TLS server presenting serverSVID, and asks the
-// SDK to connect to it as an mTLS client.
+// SDK to connect to it as an mTLS client. The server requires a client
+// certificate that verifies against the trusted roots.
 func (e *TestEnv) DialFromSDK(serverSVID *ca.X509SVIDMaterial) (DialVerdict, error) {
 	if e.control == nil {
-		return DialVerdict{}, Skipf("acting as TLS client requires harness contract v1")
+		return DialVerdict{}, ExecErrorf("harness not started")
 	}
 
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
 		Certificates: []tls.Certificate{serverSVID.TLSCertificate()},
 		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    e.trustPool,
+		ClientCAs:    e.roots(),
 	})
 	if err != nil {
 		return DialVerdict{}, ExecErrorf("listen: %v", err)
@@ -347,10 +406,10 @@ func (e *TestEnv) DialFromSDK(serverSVID *ca.X509SVIDMaterial) (DialVerdict, err
 	}
 }
 
-// X509Port returns the port on which the SDK exposes X.509 SVIDs.
-func (e *TestEnv) X509Port() int { return e.process.X509Port() }
-
 func (e *TestEnv) withStderr(err error) error {
+	if e.process == nil {
+		return err
+	}
 	tail := strings.TrimSpace(e.process.StderrTail())
 	if tail == "" {
 		return err

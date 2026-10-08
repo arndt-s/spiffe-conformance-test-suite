@@ -195,6 +195,8 @@ class Harness:
             if exc.code in _INFRA_ERRORS:
                 return 500, {"status": "error", "message": f"{exc.code.name}: {exc}"}
             return 422, {"status": "rejected", "message": f"{exc.code.name}: {exc}"}
+        except Exception as exc:  # noqa: BLE001 - the SDK refused the token, but not with its own error type
+            return 422, {"status": "rejected", "message": f"SDK raised unexpected {type(exc).__name__}: {exc}"}
         return 200, {"status": "ok", "spiffe_id": str(svid.id), "claims": dict(svid.claims)}
 
     def jwt_fetch(self, req: dict) -> tuple[int, dict]:

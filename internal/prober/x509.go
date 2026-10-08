@@ -5,21 +5,15 @@ import (
 	"bufio"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 )
 
-const (
-	// v0PostHandshakeWait bounds how long ProbeX509 waits after the handshake
-	// for a v0 harness (which never writes) to reject the client.
-	v0PostHandshakeWait = 250 * time.Millisecond
-	// v1PeerLineWait bounds how long ProbeX509 waits for a v1 harness to write
-	// the peer-ID line. v1 harnesses write or close immediately.
-	v1PeerLineWait = 5 * time.Second
-)
+// peerLineWait bounds how long ProbeX509 waits for the harness to write the
+// peer-ID line; harnesses write or close immediately after the handshake.
+const peerLineWait = 5 * time.Second
 
 // X509ProbeResult holds the result of probing the SDK's X.509 port.
 type X509ProbeResult struct {
@@ -36,13 +30,10 @@ type X509ProbeResult struct {
 // cert/key and trust bundle, then returns the presented certificate chain.
 //
 // A server can reject the client certificate after the client considers the
-// handshake complete (always under TLS 1.3), so ProbeX509 also reads from the
-// connection. With requirePeerLine (harness contract v1) the client was
-// accepted only if the server wrote the peer-ID line. Without it (v0), a TLS
-// alert or a close without data means rejected, and silence until
-// v0PostHandshakeWait expires means accepted, since v0 harnesses hold the
-// connection open. ProbeX509 returns an error if the client was rejected.
-func ProbeX509(port int, clientCert tls.Certificate, trustBundle *x509.CertPool, requirePeerLine bool) (*X509ProbeResult, error) {
+// handshake complete (always under TLS 1.3), so ProbeX509 also reads the
+// peer-ID line the harness writes after accepting a client (harness contract
+// §3). It returns an error if the server rejected the client.
+func ProbeX509(port int, clientCert tls.Certificate, trustBundle *x509.CertPool) (*X509ProbeResult, error) {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	conn, err := tls.DialWithDialer(
 		&net.Dialer{Timeout: 5 * time.Second},
@@ -86,26 +77,13 @@ func ProbeX509(port int, clientCert tls.Certificate, trustBundle *x509.CertPool,
 		}
 	}
 
-	wait := v0PostHandshakeWait
-	if requirePeerLine {
-		wait = v1PeerLineWait
-	}
-	if err := conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(peerLineWait)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 	line, err := bufio.NewReader(conn).ReadString('\n')
-	var netErr net.Error
-	switch {
-	case requirePeerLine && strings.TrimSpace(line) == "":
+	if strings.TrimSpace(line) == "" {
 		return nil, fmt.Errorf("server did not accept client (no peer-ID line): %v", err)
-	case err == nil || line != "":
-		result.PeerLine = strings.TrimSpace(line)
-	case requirePeerLine:
-		return nil, fmt.Errorf("server did not accept client (no peer-ID line): %w", err)
-	case errors.As(err, &netErr) && netErr.Timeout():
-		// Server is holding the connection open: accepted (v0 harness).
-	default:
-		return nil, fmt.Errorf("server rejected client after TLS handshake: %w", err)
 	}
+	result.PeerLine = strings.TrimSpace(line)
 	return result, nil
 }

@@ -10,13 +10,14 @@ import (
 type X509SVIDOption func(*x509SVIDConfig)
 
 type x509SVIDConfig struct {
-	ttl         time.Duration
-	dnsNames    []string
-	notBefore   time.Time
-	isCA        bool
-	keyUsage    *x509.KeyUsage
-	extraURIs   []*url.URL
-	uriOverride []*url.URL
+	ttl          time.Duration
+	dnsNames     []string
+	notBefore    time.Time
+	isCA         bool
+	keyUsage     *x509.KeyUsage
+	extraURIs    []*url.URL
+	uriOverride  []*url.URL
+	emptySubject bool
 }
 
 func defaultX509Config() x509SVIDConfig {
@@ -58,8 +59,15 @@ func WithX509ExtraURIs(uris ...*url.URL) X509SVIDOption {
 }
 
 // WithX509URIOverride replaces the default SPIFFE URI SAN list entirely.
+// Called with no URIs, the certificate has no URI SAN at all.
 func WithX509URIOverride(uris ...*url.URL) X509SVIDOption {
-	return func(c *x509SVIDConfig) { c.uriOverride = uris }
+	return func(c *x509SVIDConfig) { c.uriOverride = append([]*url.URL{}, uris...) }
+}
+
+// WithX509EmptySubject issues the certificate with an empty Subject. The SAN
+// extension is then marked critical (RFC 5280 §4.1.2.6, X509-SVID §3.1).
+func WithX509EmptySubject() X509SVIDOption {
+	return func(c *x509SVIDConfig) { c.emptySubject = true }
 }
 
 // JWTSVIDOption is a functional option for IssueJWT.
