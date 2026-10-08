@@ -103,6 +103,27 @@ jobs:
           name: results-spiffe-defakto-py
           path: results.json
 
+  rust-spiffe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build harness
+        run: cargo build --release --locked --manifest-path sdks/rust-spiffe/Cargo.toml
+      - uses: ./
+        with:
+          cmd: sdks/rust-spiffe/target/release/rust-spiffe-harness
+          results-file: results.json
+          suite-version: ${{ env.SUITE_VERSION }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-rust-spiffe
+          path: results.json
+
   node:
     name: ${{ matrix.sdk }}
     runs-on: ubuntu-latest
