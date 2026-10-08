@@ -42,17 +42,25 @@ func init() {
 		Ref:         "JS §6.2 (RFC 7515 §4.1.4)",
 		Run:         runJB4,
 	})
-	for _, v := range []struct{ name, use, desc string }{
-		{"missing-use", "", "missing"},
-		{"x509-svid-use", "x509-svid", `"x509-svid"`},
+	// A key with use "x509-svid" must be ignored (JS §6.2). Whether a key
+	// without "use" in a Workload API JWT bundle must be ignored is not clear:
+	// TB §4.2.2 requires it for SPIFFE bundles, but WA §6.2.2 only calls the
+	// Workload API's JWT bundle a standard JWK Set. That variant is OPT.
+	for _, v := range []struct {
+		name, use, desc string
+		level           suite.Level
+		ref             string
+	}{
+		{"missing-use", "", "missing", suite.OPT, "TB §4.2.2 (WA §6.2.2 unclear)"},
+		{"x509-svid-use", "x509-svid", `"x509-svid"`, suite.MUST, "JS §6.2, TB §4.2.2"},
 	} {
 		v := v
 		suite.Register(suite.TestCase{
 			ID:          "JB-5/" + v.name,
 			Description: "Ignores JWKs whose use is missing or is not jwt-svid (use " + v.desc + ")",
-			Level:       suite.MUST,
+			Level:       v.level,
 			Feature:     suite.JWTValidate,
-			Ref:         "TB §4.2.2, JS §6.2",
+			Ref:         v.ref,
 			Run: func(ctx context.Context, env *suite.TestEnv) error {
 				return runJB5(ctx, env, v.use)
 			},

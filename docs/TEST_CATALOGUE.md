@@ -205,7 +205,8 @@ Unless stated otherwise, tokens are ES256 with `aud=["conformance"]`, a 5-minute
 | JB-2 | Stops accepting a key removed by a streamed bundle update | MUST | WA §4.4 | |
 | JB-3 | Stops accepting tokens from a trust domain whose bundle was removed | SHOULD | WA §4.4 | |
 | JB-4 | Selects the verification key by `kid` among several keys | MUST | JS §6.2 (RFC 7515 §4.1.4) | Three keys; the token uses the second. |
-| JB-5 | Ignores JWKs whose `use` is missing or is not `jwt-svid` | MUST | TB §4.2.2, JS §6.2 | A token signed by such a key is rejected; other keys keep working. go-spiffe does not check `use` and is expected to fail. |
+| JB-5/x509-svid-use | Ignores JWKs whose `use` is not `jwt-svid` | MUST | JS §6.2, TB §4.2.2 | A token signed by a key with `use: x509-svid` is rejected; other keys keep working. |
+| JB-5/missing-use | Ignores JWKs without `use` | OPT | TB §4.2.2 (WA §6.2.2 unclear) | As above, for a key without `use`. TB §4.2.2 requires ignoring such keys in SPIFFE bundles, but WA §6.2.2 only describes the Workload API's JWT bundle as a standard JWK Set, so it is unclear whether the rule applies there. |
 | JB-6 | Ignores JWKs with an unknown `kty` without discarding the rest of the bundle | MUST | TB §4.2.1, §4.1.3 | |
 | JB-7 | Treats a bundle with empty `keys` as "trust nothing" for that trust domain | MUST | TB §4.1.3 | |
 | JB-8 | Accepts a token from a federated trust domain using that trust domain's bundle | MUST | WA §6.2.2, §6.3 | |
