@@ -39,7 +39,7 @@ func init() {
 func runX6(ctx context.Context, env *suite.TestEnv) error {
 	valid, err := env.IssueX509SVID("spiffe://test.example.org/x6-valid")
 	if err != nil {
-		return fmt.Errorf("issue valid SVID: %w", err)
+		return suite.ExecErrorf("issue valid SVID: %w", err)
 	}
 	env.ServeX509(valid)
 
@@ -49,7 +49,7 @@ func runX6(ctx context.Context, env *suite.TestEnv) error {
 
 	caSVID, err := env.IssueX509SVID("spiffe://test.example.org/x6-ca", ca.WithX509IsCA())
 	if err != nil {
-		return fmt.Errorf("issue CA SVID: %w", err)
+		return suite.ExecErrorf("issue CA SVID: %w", err)
 	}
 	env.PushX509Update(caSVID)
 
@@ -65,7 +65,7 @@ func runX6(ctx context.Context, env *suite.TestEnv) error {
 func runX7(ctx context.Context, env *suite.TestEnv) error {
 	valid, err := env.IssueX509SVID("spiffe://test.example.org/x7-valid")
 	if err != nil {
-		return fmt.Errorf("issue valid SVID: %w", err)
+		return suite.ExecErrorf("issue valid SVID: %w", err)
 	}
 	env.ServeX509(valid)
 
@@ -77,7 +77,7 @@ func runX7(ctx context.Context, env *suite.TestEnv) error {
 		ca.WithX509KeyUsage(x509.KeyUsageCertSign|x509.KeyUsageDigitalSignature),
 	)
 	if err != nil {
-		return fmt.Errorf("issue keyCertSign SVID: %w", err)
+		return suite.ExecErrorf("issue keyCertSign SVID: %w", err)
 	}
 	env.PushX509Update(certSignSVID)
 
@@ -93,7 +93,7 @@ func runX7(ctx context.Context, env *suite.TestEnv) error {
 func runX8(ctx context.Context, env *suite.TestEnv) error {
 	valid, err := env.IssueX509SVID("spiffe://test.example.org/x8-valid")
 	if err != nil {
-		return fmt.Errorf("issue valid SVID: %w", err)
+		return suite.ExecErrorf("issue valid SVID: %w", err)
 	}
 	env.ServeX509(valid)
 
@@ -106,7 +106,7 @@ func runX8(ctx context.Context, env *suite.TestEnv) error {
 		ca.WithX509ExtraURIs(extraURI),
 	)
 	if err != nil {
-		return fmt.Errorf("issue two-URI SVID: %w", err)
+		return suite.ExecErrorf("issue two-URI SVID: %w", err)
 	}
 	env.PushX509Update(twoURISVID)
 
@@ -122,7 +122,7 @@ func runX8(ctx context.Context, env *suite.TestEnv) error {
 func runX9(ctx context.Context, env *suite.TestEnv) error {
 	valid, err := env.IssueX509SVID("spiffe://test.example.org/x9-valid")
 	if err != nil {
-		return fmt.Errorf("issue valid SVID: %w", err)
+		return suite.ExecErrorf("issue valid SVID: %w", err)
 	}
 	env.ServeX509(valid)
 
@@ -135,7 +135,7 @@ func runX9(ctx context.Context, env *suite.TestEnv) error {
 		ca.WithX509URIOverride(httpsURI),
 	)
 	if err != nil {
-		return fmt.Errorf("issue non-spiffe URI SVID: %w", err)
+		return suite.ExecErrorf("issue non-spiffe URI SVID: %w", err)
 	}
 	// Push using raw state so the fake SPIFFE ID in the material does not confuse
 	// the server; we want the cert's URI SAN (https://) to be the reject trigger.

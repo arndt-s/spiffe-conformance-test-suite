@@ -43,7 +43,7 @@ func runX10(ctx context.Context, env *suite.TestEnv) error {
 
 	badCert, err := env.IssueX509SVID("spiffe://test.example.org/x10-probe", ca.WithX509IsCA())
 	if err != nil {
-		return fmt.Errorf("issue IsCA cert: %w", err)
+		return suite.ExecErrorf("issue IsCA cert: %w", err)
 	}
 	_, err = env.ProbeX509WithCert(badCert)
 	if err == nil {
@@ -61,7 +61,7 @@ func runX11(ctx context.Context, env *suite.TestEnv) error {
 		ca.WithX509KeyUsage(x509.KeyUsageCertSign|x509.KeyUsageDigitalSignature),
 	)
 	if err != nil {
-		return fmt.Errorf("issue keyCertSign cert: %w", err)
+		return suite.ExecErrorf("issue keyCertSign cert: %w", err)
 	}
 	_, err = env.ProbeX509WithCert(badCert)
 	if err == nil {
@@ -80,7 +80,7 @@ func runX12(ctx context.Context, env *suite.TestEnv) error {
 		ca.WithX509ExtraURIs(extraURI),
 	)
 	if err != nil {
-		return fmt.Errorf("issue two-URI cert: %w", err)
+		return suite.ExecErrorf("issue two-URI cert: %w", err)
 	}
 	_, err = env.ProbeX509WithCert(badCert)
 	if err == nil {
@@ -99,7 +99,7 @@ func runX13(ctx context.Context, env *suite.TestEnv) error {
 		ca.WithX509URIOverride(httpsURI),
 	)
 	if err != nil {
-		return fmt.Errorf("issue non-spiffe URI cert: %w", err)
+		return suite.ExecErrorf("issue non-spiffe URI cert: %w", err)
 	}
 	_, err = env.ProbeX509WithCert(badCert)
 	if err == nil {

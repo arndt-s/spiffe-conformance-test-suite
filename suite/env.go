@@ -23,7 +23,7 @@ type TestEnv struct {
 	server    *workloadapi.Server
 	process   *harness.RunningProcess
 	probeCert tls.Certificate // valid client cert for ProbeX509 calls
-	trustPool *x509.CertPool // trust pool built from test CA
+	trustPool *x509.CertPool  // trust pool built from test CA
 }
 
 // newTestEnv creates and wires up a complete test environment.

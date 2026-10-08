@@ -43,7 +43,7 @@ func init() {
 func runX1(ctx context.Context, env *suite.TestEnv) error {
 	svid, err := env.IssueX509SVID("spiffe://test.example.org/x1")
 	if err != nil {
-		return fmt.Errorf("issue SVID: %w", err)
+		return suite.ExecErrorf("issue SVID: %w", err)
 	}
 	env.ServeX509(svid)
 
@@ -60,7 +60,7 @@ func runX1(ctx context.Context, env *suite.TestEnv) error {
 func runX2(ctx context.Context, env *suite.TestEnv) error {
 	first, err := env.IssueX509SVID("spiffe://test.example.org/x2-first")
 	if err != nil {
-		return fmt.Errorf("issue first SVID: %w", err)
+		return suite.ExecErrorf("issue first SVID: %w", err)
 	}
 	env.ServeX509(first)
 
@@ -70,7 +70,7 @@ func runX2(ctx context.Context, env *suite.TestEnv) error {
 
 	second, err := env.IssueX509SVID("spiffe://test.example.org/x2-second")
 	if err != nil {
-		return fmt.Errorf("issue second SVID: %w", err)
+		return suite.ExecErrorf("issue second SVID: %w", err)
 	}
 	env.PushX509Update(second)
 
@@ -83,7 +83,7 @@ func runX2(ctx context.Context, env *suite.TestEnv) error {
 func runX3(ctx context.Context, env *suite.TestEnv) error {
 	valid, err := env.IssueX509SVID("spiffe://test.example.org/x3-valid")
 	if err != nil {
-		return fmt.Errorf("issue valid SVID: %w", err)
+		return suite.ExecErrorf("issue valid SVID: %w", err)
 	}
 	env.ServeX509(valid)
 
@@ -93,7 +93,7 @@ func runX3(ctx context.Context, env *suite.TestEnv) error {
 
 	corrupted, err := env.IssueX509SVID("spiffe://test.example.org/x3-corrupted")
 	if err != nil {
-		return fmt.Errorf("issue corrupted SVID: %w", err)
+		return suite.ExecErrorf("issue corrupted SVID: %w", err)
 	}
 	// XOR the last 10 bytes of the DER to corrupt the signature block.
 	for i := len(corrupted.CertDER) - 10; i < len(corrupted.CertDER); i++ {
@@ -113,7 +113,7 @@ func runX3(ctx context.Context, env *suite.TestEnv) error {
 func runX4(ctx context.Context, env *suite.TestEnv) error {
 	valid, err := env.IssueX509SVID("spiffe://test.example.org/x4-valid")
 	if err != nil {
-		return fmt.Errorf("issue valid SVID: %w", err)
+		return suite.ExecErrorf("issue valid SVID: %w", err)
 	}
 	env.ServeX509(valid)
 
@@ -123,11 +123,11 @@ func runX4(ctx context.Context, env *suite.TestEnv) error {
 
 	foreignCA, err := ca.New("spiffe://foreign.example.org")
 	if err != nil {
-		return fmt.Errorf("create foreign CA: %w", err)
+		return suite.ExecErrorf("create foreign CA: %w", err)
 	}
 	foreignSVID, err := foreignCA.IssueX509SVID("spiffe://foreign.example.org/x4-foreign")
 	if err != nil {
-		return fmt.Errorf("issue foreign SVID: %w", err)
+		return suite.ExecErrorf("issue foreign SVID: %w", err)
 	}
 
 	// Send a cert chain signed by the foreign CA but advertise our CA as the
@@ -149,7 +149,7 @@ func runX4(ctx context.Context, env *suite.TestEnv) error {
 func runX5(ctx context.Context, env *suite.TestEnv) error {
 	valid, err := env.IssueX509SVID("spiffe://test.example.org/x5-valid")
 	if err != nil {
-		return fmt.Errorf("issue valid SVID: %w", err)
+		return suite.ExecErrorf("issue valid SVID: %w", err)
 	}
 	env.ServeX509(valid)
 
@@ -163,7 +163,7 @@ func runX5(ctx context.Context, env *suite.TestEnv) error {
 		ca.WithX509TTL(time.Hour), // NotAfter = now-2h+1h = now-1h
 	)
 	if err != nil {
-		return fmt.Errorf("issue expired SVID: %w", err)
+		return suite.ExecErrorf("issue expired SVID: %w", err)
 	}
 	env.PushX509Update(expired)
 

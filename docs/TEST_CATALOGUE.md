@@ -33,12 +33,26 @@ fails. In particular:
   (retries, reconnects, discarding malformed responses). A failing SHOULD
   test is still reported as `FAIL`, but it does not block the claim.
 
+### 1.2 Results and run status
+
+Each test case has exactly one result:
+
+| Result | Meaning |
+| --- | --- |
+| `PASS` | The SDK behaved as the requirement demands. |
+| `FAIL` | The SDK did not. This is a finding about the SDK, not a problem with the run. |
+| `SKIP` | The harness reported the operation as `unsupported`. |
+| `ERROR` | The test could not be executed (harness did not start, fixture setup failed, the test panicked). Nothing was learned about the SDK. |
+
+Results are never rewritten: there is no way to turn a `FAIL` into a `SKIP`.
+A run fails (non-zero exit) only if a test case ended in `ERROR`.
+
 An SDK is **conformant for a feature group** (see
 [harness contract §5](HARNESS_CONTRACT.md#5-feature-groups)) when every `core` test
 in that group passes. Tests that the harness answers with `unsupported` are reported
 as `SKIP`, and they exclude that feature group from the claim.
 
-### 1.2 Spec references
+### 1.3 Spec references
 
 | Abbrev. | Document |
 | --- | --- |
@@ -50,7 +64,7 @@ as `SKIP`, and they exclude that feature group from the claim.
 | TB | The SPIFFE Trust Domain and Bundle (`SPIFFE_Trust_Domain_and_Bundle.md`) |
 | FD | SPIFFE Federation (`SPIFFE_Federation.md`) |
 
-### 1.3 Roles (X.509 peer validation)
+### 1.4 Roles (X.509 peer validation)
 
 `XV` and `XF` tests run in up to two roles, reported as separate results
 (`XV-7/server`, `XV-7/client`):

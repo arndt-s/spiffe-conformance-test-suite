@@ -117,9 +117,6 @@ jobs:
           cmd: ./bin/harness
           args: --foo,--bar
           tests: X1,X2,J1,J3        # optional; runs all if omitted
-          allow-failure: X10,X11    # optional; failures here become SKIP
-          strict: 'true'            # fail the job on any non-tolerated failure
-          output: json
           results-file: conformance.json
 
       - uses: actions/upload-artifact@v4
@@ -136,11 +133,31 @@ jobs:
 | `cmd`            | yes      | —        | Path to the SDK harness binary to test.                                                    |
 | `args`           | no       | `''`     | Comma-separated arguments to pass to the harness.                                          |
 | `tests`          | no       | `''`     | Comma-separated test cases to run (e.g. `X1,J3`). Empty runs all.                          |
-| `allow-failure`  | no       | `''`     | Comma-separated tests whose failures are tolerated (reported as `SKIP`, ignored by strict).|
-| `strict`         | no       | `false`  | If `true`, fail the action on any non-tolerated test failure or error.                     |
-| `output`         | no       | `text`   | Output format: `text` or `json`.                                                           |
-| `results-file`   | no       | `''`     | Also write suite output to this path.                                                      |
+| `output`         | no       | `text`   | Log output format: `text` or `json`.                                                       |
+| `results-file`   | no       | `''`     | Also write the results as JSON to this path (defaults to a file in `$RUNNER_TEMP`).        |
 | `verbose`        | no       | `false`  | Enable verbose logging.                                                                    |
 | `suite-version`  | no       | `latest` | Suite version to install (git tag, branch, or `latest`).                                   |
 | `go-version`     | no       | `stable` | Go toolchain version used to install the suite.                                            |
 
+### Results vs. run status
+
+A test result is the outcome of the run, not a reason to fail it. An SDK that
+fails test cases is reported as such, and the run still succeeds.
+
+- `suite run` exits **0** when every selected test case executed, whatever its
+  result (`PASS`, `FAIL`, `SKIP`); **2** when one or more test cases could not be
+  executed (`ERROR`: the harness did not start, the suite could not build its
+  fixtures, or a test panicked); and **1** for invalid usage.
+- The action fails only in the `ERROR` case. It writes a results table to the job
+  summary and exposes the counts as outputs (`passed`, `failed`, `skipped`,
+  `errors`, `results-file`), so a workflow that wants to gate on results can do so
+  explicitly:
+
+```yaml
+      - id: conformance
+        uses: arndt-s/spiffe-conformance-test-suite@v1
+        with:
+          cmd: ./bin/harness
+      - if: steps.conformance.outputs.failed != '0'
+        run: exit 1
+```

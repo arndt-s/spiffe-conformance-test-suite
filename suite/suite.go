@@ -4,6 +4,7 @@ package suite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,8 +15,23 @@ import (
 	"github.com/arndt-s/spiffe-conformance-test-suite/internal/result"
 )
 
-// TestFunc is the signature every test case must implement.
+// TestFunc is the signature every test case must implement. It returns nil if
+// the SDK behaved correctly, an error describing the misbehaviour if it did not
+// (reported as FAIL), or an ExecutionError if the test could not be carried out
+// (reported as ERROR).
 type TestFunc func(ctx context.Context, env *TestEnv) error
+
+// ExecutionError marks a test outcome as "could not execute": the suite failed
+// to set up or drive the test, so nothing was learned about the SDK.
+type ExecutionError struct{ Err error }
+
+func (e *ExecutionError) Error() string { return e.Err.Error() }
+func (e *ExecutionError) Unwrap() error { return e.Err }
+
+// ExecErrorf returns an ExecutionError with a formatted message.
+func ExecErrorf(format string, args ...any) error {
+	return &ExecutionError{Err: fmt.Errorf(format, args...)}
+}
 
 // TestCase is the unit of work registered into the suite.
 type TestCase struct {
@@ -87,7 +103,7 @@ func RunOne(ctx context.Context, name string, cfg RunnerConfig) (result.Result, 
 	return runOne(ctx, tc, cfg), nil
 }
 
-func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) result.Result {
+func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) (res result.Result) {
 	env, cleanup, err := newTestEnv(ctx, cfg.Cmd, cfg.Args, cfg.StOut, cfg.StErr)
 	if err != nil {
 		return result.Result{
@@ -99,7 +115,27 @@ func runOne(ctx context.Context, tc TestCase, cfg RunnerConfig) result.Result {
 	}
 	defer cleanup()
 
+	defer func() {
+		if p := recover(); p != nil {
+			res = result.Result{
+				Name:        tc.Name,
+				Description: tc.Description,
+				Status:      result.StatusError,
+				Message:     fmt.Sprintf("test panicked: %v", p),
+			}
+		}
+	}()
+
 	runErr := tc.Run(ctx, env)
+	var execErr *ExecutionError
+	if errors.As(runErr, &execErr) {
+		return result.Result{
+			Name:        tc.Name,
+			Description: tc.Description,
+			Status:      result.StatusError,
+			Message:     runErr.Error(),
+		}
+	}
 	if runErr != nil {
 		return result.Result{
 			Name:        tc.Name,
